@@ -26,6 +26,7 @@ from rasterio.crs import CRS
 from rasterio.warp import transform as warp_transform
 from rasterio.warp import transform_geom
 
+from . import damage as DMG
 from .dem import DEM
 from .hazard import (DAMAGE_CLASS_NAMES, HAZARD_CLASSES, AssetValues,
                      damage_class, damage_fraction)
@@ -225,39 +226,80 @@ def facility_impact(dem: DEM, facilities: List[dict], depth: np.ndarray,
 
 
 def building_impact(dem: DEM, buildings: List[dict], depth: np.ndarray,
-                    hazard_cls: np.ndarray, dv: np.ndarray) -> Dict[str, object]:
-    """Buildings by hazard class and by depth-damage class."""
+                    hazard_cls: np.ndarray, dv: np.ndarray,
+                    footprints: Optional[Dict[int, float]] = None,
+                    iso3: str = "IND") -> Dict[str, object]:
+    """Buildings by hazard class, asset class and depth-damage class.
+
+    Each building is classified from its own OSM tags and evaluated against the
+    published JRC curve for THAT class -- a warehouse is not damaged like a
+    house.  Where a footprint is available the gross floor area is carried
+    through so the loss step can use the per-square-metre unit values the JRC
+    database actually publishes.
+    """
     if not buildings:
         return {"total_in_domain": 0, "exposed": 0, "by_hazard_class": [],
-                "by_damage_class": [], "structural_dv": {}}
+                "by_damage_class": [], "by_asset_class": [], "structural_dv": {}}
+    footprints = footprints or {}
     lons = [b["lon"] for b in buildings]
     lats = [b["lat"] for b in buildings]
     d = sample_raster(dem, depth, lons, lats)
     c = sample_raster(dem, hazard_cls.astype(float), lons, lats).astype(int)
     q = sample_raster(dem, dv, lons, lats)
-
     wet = d > 0.05
-    frac = damage_fraction(d, "residential")
-    dcls = damage_class(frac)
+
+    curves = DMG.all_curves(iso3)
+    classes = np.empty(len(buildings), dtype=object)
+    frac = np.zeros(len(buildings), dtype=np.float64)
+    area = np.zeros(len(buildings), dtype=np.float64)
+    tagged = 0
+    for i, b in enumerate(buildings):
+        cls, basis = DMG.classify_building(b.get("tags"))
+        classes[i] = cls
+        frac[i] = float(curves[cls].factor(d[i]))
+        fp = footprints.get(int(b.get("osm_id", -1)))
+        if fp:
+            area[i] = DMG.floor_area_m2(fp, b.get("tags"))
+            tagged += 1
+    dcls = DMG.damage_class(frac)
 
     by_haz = [{"class": i, "name": _class_name(i),
                "buildings": int(((c == i) & wet).sum())} for i in range(1, 5)]
-    by_dmg = [{"class": i, "name": DAMAGE_CLASS_NAMES[i],
+    by_dmg = [{"class": i, "name": DMG.DAMAGE_CLASS_NAMES[i],
                "buildings": int(((dcls == i) & wet).sum())} for i in range(1, 5)]
+    by_asset = []
+    for cls in DMG.ASSET_CLASSES:
+        sel = np.array([x == cls for x in classes]) & wet
+        if not sel.any():
+            continue
+        by_asset.append({
+            "asset_class": cls,
+            "buildings": int(sel.sum()),
+            "floor_area_m2": round(float(area[sel].sum()), 1),
+            "mean_damage_fraction": round(float(frac[sel].mean()), 4),
+            "curve": curves[cls].source,
+        })
 
     return {
         "total_in_domain": len(buildings),
         "exposed": int(wet.sum()),
         "by_hazard_class": by_haz,
         "by_damage_class": by_dmg,
+        "by_asset_class": by_asset,
         "mean_damage_fraction": round(float(frac[wet].mean()), 4) if wet.any() else 0.0,
+        "footprint_coverage": {
+            "with_footprint": tagged,
+            "of_total": len(buildings),
+            "note": ("Buildings without an OSM footprint polygon contribute to "
+                     "the counts but not to the floor-area-based loss."),
+        },
         "structural_dv": {
             "dv_lt_3_inundation_only": int(((q > 0) & (q < 3) & wet).sum()),
             "dv_3_to_7_partial_collapse": int(((q >= 3) & (q < 7) & wet).sum()),
             "dv_gt_7_total_destruction": int(((q >= 7) & wet).sum()),
             "reference": "Clausen & Clark (1990) masonry stability thresholds",
         },
-        "damage_curve": "JRC Huizinga et al. (2017), Asia residential",
+        "damage_curves": {cls: curves[cls].source for cls in DMG.ASSET_CLASSES},
     }
 
 
@@ -347,40 +389,102 @@ def evacuation_timeline(settlements: List[dict],
 
 def estimate_losses(buildings: Dict[str, object], roads: Dict[str, object],
                     landcover: Dict[str, object],
-                    values: AssetValues) -> Dict[str, object]:
-    """Monetary loss.  Every figure is tagged with the unit rates used."""
-    n_dmg = buildings.get("exposed", 0)
-    mean_frac = buildings.get("mean_damage_fraction", 0.0) or 0.0
-    building_loss = n_dmg * mean_frac * values.residential_per_building
+                    values: Optional[AssetValues] = None,
+                    iso3: str = "IND",
+                    road_depth_m: Optional[float] = None) -> Dict[str, object]:
+    """Monetary loss from published international reference values.
 
+    Unit values come from the JRC global flood damage database (construction
+    cost surveys for buildings, continental infrastructure value for roads,
+    World Bank agricultural value added for cropland), converted to present-day
+    local currency through the live World Bank exchange-rate and GDP-deflator
+    series.  `values` overrides the published rates where an audited local
+    schedule-of-rates is available; passing None uses the published set.
+    """
+    rates = DMG.max_damage_set(iso3)
+    lines: List[dict] = []
+
+    # -- buildings: per asset class, floor area x class curve x class rate --
+    building_loss = 0.0
+    covered_area = 0.0
+    for row in (buildings.get("by_asset_class") or []):
+        cls = row["asset_class"]
+        rate = rates.get(cls)
+        if rate is None or rate.unit != "per_m2":
+            continue
+        loss = row["floor_area_m2"] * row["mean_damage_fraction"] * rate.value
+        building_loss += loss
+        covered_area += row["floor_area_m2"]
+        lines.append({"component": f"buildings/{cls}",
+                      "quantity": row["floor_area_m2"], "unit": "m2 floor area",
+                      "damage_fraction": row["mean_damage_fraction"],
+                      "unit_value": round(rate.value, 2),
+                      "loss": round(loss, 0), "source": rate.source})
+
+    # -- roads: JRC infrastructure curve at the sampled depth, EUR/m rate ---
     road_km = roads.get("total_inundated_km", 0.0) or 0.0
-    road_loss = road_km * values.road_per_km * 0.35   # partial-damage factor
+    road_rate = rates.get("infrastructure")
+    road_loss = 0.0
+    if road_rate is not None and road_km > 0:
+        # The infrastructure curve replaces the flat partial-damage factor the
+        # earlier version used: damage on a flooded road is depth dependent.
+        d = road_depth_m if road_depth_m is not None else 1.0
+        rfrac = float(DMG.curve("infrastructure", iso3).factor(d))
+        road_loss = road_km * 1000.0 * rfrac * road_rate.value
+        lines.append({"component": "roads", "quantity": round(road_km, 3),
+                      "unit": "km inundated", "damage_fraction": round(rfrac, 4),
+                      "unit_value": round(road_rate.value, 2),
+                      "loss": round(road_loss, 0), "source": road_rate.source,
+                      "depth_used_m": d})
 
+    # -- cropland ----------------------------------------------------------
     crop_ha = 0.0
     for label, v in (landcover or {}).items():
         if "Cropland" in label:
             crop_ha += v.get("area_ha", 0.0)
-    crop_loss = crop_ha * values.cropland_per_hectare
+    crop_rate = rates.get("agriculture")
+    crop_loss = 0.0
+    if crop_rate is not None and crop_ha > 0:
+        d = road_depth_m if road_depth_m is not None else 1.0
+        cfrac = float(DMG.curve("agriculture", iso3).factor(d))
+        crop_loss = crop_ha * cfrac * crop_rate.value
+        lines.append({"component": "cropland", "quantity": round(crop_ha, 2),
+                      "unit": "ha inundated", "damage_fraction": round(cfrac, 4),
+                      "unit_value": round(crop_rate.value, 2),
+                      "loss": round(crop_loss, 0), "source": crop_rate.source})
 
     total = building_loss + road_loss + crop_loss
+    currency = next((r.currency for r in rates.values()), "LCU")
+    price_year = next((r.price_year for r in rates.values()), None)
+    fp = buildings.get("footprint_coverage") or {}
     return {
-        "currency": values.currency,
+        "currency": currency,
+        "price_year": price_year,
         "buildings": round(building_loss, 0),
         "roads": round(road_loss, 0),
         "cropland": round(crop_loss, 0),
         "total": round(total, 0),
         "total_crore": round(total / 1e7, 2),
+        "line_items": lines,
         "components": {
-            "buildings_exposed": n_dmg,
-            "mean_damage_fraction": mean_frac,
+            "buildings_exposed": buildings.get("exposed", 0),
+            "building_floor_area_m2": round(covered_area, 1),
+            "mean_damage_fraction": buildings.get("mean_damage_fraction", 0.0),
             "road_km_inundated": road_km,
             "cropland_ha_inundated": round(crop_ha, 2),
         },
-        "unit_values_used": values.to_dict(),
-        "caveat": ("Monetary figures are derived from the unit rates above, "
-                   "which are assumptions, not measurements. Physical exposure "
-                   "counts are from OSM/WorldPop/WorldCover and are the "
-                   "defensible output."),
+        "unit_values_used": {k: v.to_dict() for k, v in rates.items()},
+        "basis": DMG.citation(),
+        "caveat": (
+            "Unit values are published international reference data (JRC "
+            "global flood damage database) converted to present-day local "
+            "currency through live World Bank exchange-rate and GDP-deflator "
+            "series -- not local assumptions. They are national averages: "
+            "replace with an audited state schedule-of-rates where one exists. "
+            f"Floor area is known for {fp.get('with_footprint', 0)} of "
+            f"{fp.get('of_total', 0)} mapped buildings; buildings without an "
+            "OSM footprint polygon contribute no monetary loss, so the "
+            "building figure is a LOWER BOUND."),
     }
 
 

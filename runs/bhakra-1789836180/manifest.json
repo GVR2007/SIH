@@ -1,0 +1,291 @@
+{
+  "run_id": "bhakra-1789836180",
+  "created_utc": "2026-09-19T16:43:00Z",
+  "scenario": {
+    "name": "bhakra",
+    "bbox_ll": [
+      76.3,
+      31.2,
+      76.8,
+      31.6
+    ],
+    "dam_name": "Bhakra",
+    "barrier_type": "engineered",
+    "failure_mode": "overtopping",
+    "growth_law": "sine",
+    "seed_method": "auto",
+    "loading": "FRL",
+    "res_m": 120.0,
+    "sim_hours": 3.0,
+    "n_frames": 36,
+    "breach_hours": 3.0,
+    "inflow_m3s": 0.0,
+    "manning_scale": 1.0,
+    "channel_burn_m": 0.0,
+    "run_sph": true,
+    "sph_dp": 4.0,
+    "sph_seconds": 20.0,
+    "sentinel1_window": null,
+    "validation_mode": "context",
+    "satellite_basemap": true,
+    "population_product": "1km",
+    "iso3": "IND",
+    "asset_values": {
+      "currency": "INR",
+      "residential_per_building": 1200000.0,
+      "commercial_per_building": 3500000.0,
+      "road_per_km": 25000000.0,
+      "cropland_per_hectare": 150000.0,
+      "_provenance": "USER-SUPPLIED ASSUMPTION - not measured data. Replace with audited schedule-of-rates for the study area."
+    }
+  },
+  "data_sources": {
+    "elevation": "Copernicus GLO-30 DSM (ESA/Airbus), AWS Open Data bucket copernicus-dem-30m",
+    "landcover": "ESA WorldCover v200 via MS Planetary Computer (ESA_WorldCover_10m_2021_v200_N30E075, ESA_WorldCover_10m_2020_v100_N30E075)",
+    "dam": [
+      "OpenStreetMap (ODbL)",
+      "Wikidata Q83436 (CC0)",
+      "https://en.wikipedia.org/wiki/Bhakra%20Dam"
+    ],
+    "building_footprints": "OpenStreetMap building polygons via Overpass (ODbL), 1978 footprints with computed area",
+    "population": "WorldPop 2020 1km (IND), https://data.worldpop.org/GIS/Population/Global_2000_2020_1km/2020/IND/ind_ppp_2020_1km_Aggregated.tif",
+    "exposure": "OpenStreetMap via Overpass API (ODbL)",
+    "satellite_imagery": {
+      "collection": "sentinel-2-l2a via Microsoft Planetary Computer",
+      "scenes": [
+        {
+          "id": "S2B_MSIL2A_20231004T053649_R005_T43RFQ_20231004T105900",
+          "tile": "43RFQ",
+          "datetime": "2023-10-04T05:36:49.024000Z",
+          "cloud_cover_pct": 0.0
+        }
+      ],
+      "granules_used": 1,
+      "grid_coverage_pct": 94.3,
+      "read_decimation": 1,
+      "seconds": 154.6,
+      "bands": "B04/B03/B02 true colour, 2-96% per-band stretch, gamma 0.85",
+      "licence": "Copernicus Sentinel data, free and open",
+      "cached": true
+    },
+    "districts": "geoBoundaries gbOpen ADM2 (CC-BY 4.0)",
+    "damage_model": "Huizinga, J., De Moel, H., Szewczyk, W. (2017). Global flood depth-damage functions: Methodology and the database with guidelines. EUR 28552 EN, Publications Office of the European Union. doi:10.2760/16510, JRC105688.",
+    "sentinel1": {
+      "item_id": "S1A_IW_GRDH_1SDV_20240325T010010_20240325T010035_053131_066FAE_rtc",
+      "datetime": "2024-03-25T01:00:22.632996Z",
+      "platform": "SENTINEL-1A",
+      "collection": "sentinel-1-rtc via Microsoft Planetary Computer",
+      "otsu_threshold_db": -8.8
+    }
+  },
+  "qc": {
+    "dem": {
+      "source": "Copernicus GLO-30 DSM (ESA/Airbus), AWS Open Data bucket copernicus-dem-30m",
+      "cells": 151152,
+      "grid": [
+        376,
+        402
+      ],
+      "void_cells": 0,
+      "void_fraction": 0.0,
+      "z_min_m": 282.85,
+      "z_max_m": 1744.72,
+      "relief_m": 1461.87,
+      "cell_size_m": [
+        120.0,
+        120.0
+      ],
+      "crs": "EPSG:32643",
+      "projected_metres": true,
+      "max_slope_deg": 45.06,
+      "mean_slope_deg": 8.09,
+      "messages": [],
+      "pass": true
+    },
+    "conditioning": [
+      "void_fill",
+      "priority_flood_sink_fill"
+    ],
+    "reservoir": {
+      "dem_capacity_mcm": 7.437683758492739,
+      "dem_max_depth_m": 144.12650024414074,
+      "dem_surface_km2": 0.12385259470080179,
+      "messages": [],
+      "pass": true,
+      "dem_is_surface_model": true,
+      "caveat": "Copernicus GLO-30 is a DSM: for an existing reservoir it records the water surface, so DEM-derived storage is a LOWER BOUND on gross capacity and the surface area is measured at crest level, not at FRL.",
+      "published_fields": {
+        "dam_crosses": "[[Satluj River]]",
+        "dam_type": "Concrete gravity",
+        "dam_length": "{{convert|1700|ft|m|abbr=on}}",
+        "dam_height": "{{convert|741|ft|m|abbr=on}}",
+        "res_capacity_total": "7.551 million megalitres (266.70 tmc ft)",
+        "res_catchment": "56980&nbsp;km<sup>2</sup>",
+        "res_surface": "168.35 km<sup>2</sup>",
+        "plant_capacity": "1325 [[megawatt|MW]]",
+        "res_capacity_active": "6.007 million megalitres"
+      },
+      "published_capacity_mcm": 7.6,
+      "capacity_ratio_dem_over_published": 0.985,
+      "published_surface_km2": 168.35,
+      "published_dam_height_m": 741.0
+    },
+    "breach": {
+      "mass_balance": {
+        "v_initial_mcm": 7.438,
+        "v_final_mcm": 0.005,
+        "released_mcm": 7.433,
+        "inflow_mcm": 0.0,
+        "closure_error_mcm": 0.0,
+        "relative_error": 0.0,
+        "pass": true
+      },
+      "peak_discharge_envelopes": {
+        "routed_peak_m3s": 54638.2,
+        "froehlich_1995_m3s": 30697.7,
+        "costa_schuster_1988_m3s": 3447.9,
+        "ratio_to_froehlich": 1.78,
+        "ratio_to_costa_schuster": 15.847,
+        "xu_zhang_2009_m3s": 63859.5,
+        "ratio_to_xu_zhang": 0.856,
+        "within_envelope": false,
+        "within_regression_calibration_range": false,
+        "reservoir_volume_mcm": 7.4,
+        "head_m": 144.1,
+        "pass": true,
+        "interpretation": "Routed peak lies outside the Froehlich/Costa-Schuster envelopes, which were fitted to dams far smaller than this one (<~1 km3, <~100 m head). Per USBR HL-2014-02 the right response is a multi-regression spread, reported under breach.regression_ensemble, with the routed hydrograph as the primary estimate; Xu & Zhang (2009) is the envelope fitted to the largest sample of tall dams."
+      },
+      "geometry": {
+        "final_top_width_m": 27.3,
+        "breach_height_m": 144.13,
+        "formation_time_min": 6.36,
+        "width_to_height": 0.19,
+        "pass": false
+      },
+      "drawdown": {
+        "h_initial_m": 503.67,
+        "h_final_m": 365.98,
+        "drawdown_m": 137.69,
+        "fraction_drained": 0.9994
+      }
+    },
+    "sph_balance": {
+      "sph_window_s": [
+        0.002,
+        13.993
+      ],
+      "sph_peak_m3s": 55759.5,
+      "sph_peak_at_s": 3.9,
+      "weir_peak_m3s": 54638.2,
+      "weir_t_peak_min": 4.25,
+      "peak_ratio_sph_over_weir": 1.021,
+      "breach_formation_time_min": 6.36,
+      "head_m": 144.13,
+      "critical_unit_discharge_m2s": 2949.4,
+      "sph_peak_unit_discharge_m2s": 2043.4,
+      "ratio_to_critical_flow": 0.693,
+      "balance_pass": true,
+      "interpretation": "SPH near-field discharge is within the expected band around the critical-flow ceiling for this head.",
+      "note": "SPH models an instantaneous, fully-open breach and therefore peaks higher and far earlier than the weir closure, which grows the breach over its formation time. The two peaks are not expected to match; the critical-flow ratio is the meaningful gate."
+    },
+    "exposure": {
+      "inundation_touches_domain_edge": false,
+      "exposure_feature_counts": {
+        "settlements": 68,
+        "buildings": 1978,
+        "roads": 769,
+        "railways": 98,
+        "facilities": 54,
+        "bridges": 0,
+        "power": 16
+      },
+      "population_total_in_domain": 1001393.0,
+      "population_exposed": 2845.0,
+      "buildings_exposed": 0,
+      "people_per_inundated_building": null,
+      "messages": [
+        "No settlement intersects the flood extent; check the bbox."
+      ],
+      "warnings": [
+        "2,845 people exposed but ZERO OSM buildings inundated: building footprints are unmapped here. Use the population figure, not the building count."
+      ],
+      "pass": false
+    },
+    "gates": {
+      "dem": true,
+      "reservoir": true,
+      "breach_mass_balance": true,
+      "breach_peak_envelope": true,
+      "breach_geometry": false,
+      "sph_balance": true,
+      "exposure": false
+    },
+    "failed_gates": [
+      "breach_geometry",
+      "exposure"
+    ],
+    "overall_pass": false
+  },
+  "timings": {
+    "dem_s": 0.0,
+    "landcover_s": 20.1,
+    "sph_s": 4.0,
+    "swe_grid_standalone_s": 8.2,
+    "swe_coupled_s": 9.9,
+    "total_s": 88.4
+  },
+  "dam": {
+    "osm": {
+      "id": 120587569,
+      "name": "Bhakra Dam",
+      "crest_length_m": 1505.4,
+      "tags": {
+        "name": "Bhakra Dam",
+        "name:hi": "\u092d\u093e\u0916\u0921\u093c\u093e \u092c\u093e\u0902\u0927",
+        "name:ml": "\u0d2d\u0d15\u0d4d\u0d30 \u0d05\u0d23\u0d15\u0d4d\u0d15\u0d46\u0d1f\u0d4d\u0d1f\u0d4d",
+        "name:pa": "\u0a2d\u0a3e\u0a16\u0a5c\u0a3e \u0a21\u0a48\u0a2e",
+        "operator": "Bhakra Beas Management Board",
+        "waterway": "dam",
+        "wikidata": "Q83436"
+      }
+    },
+    "center_ll": [
+      76.433585528125,
+      31.41064789375
+    ],
+    "sources": [
+      "OpenStreetMap (ODbL)",
+      "Wikidata Q83436 (CC0)",
+      "https://en.wikipedia.org/wiki/Bhakra%20Dam"
+    ],
+    "wikidata": {
+      "qid": "Q83436",
+      "label": "Bhakra Dam",
+      "description": "gravity dam in Bhakra, Bilaspur district, Himachal Pradesh, India",
+      "sitelink": "Bhakra Dam",
+      "height_m": 225.55,
+      "length_m": 520.0,
+      "coordinate": [
+        76.43333333,
+        31.41083333
+      ],
+      "inception": "+1948-00-00T00:00:00Z",
+      "installed_capacity_W": 1379.6
+    },
+    "wikipedia": {
+      "title": "Bhakra Dam",
+      "fields": {
+        "dam_crosses": "[[Satluj River]]",
+        "dam_type": "Concrete gravity",
+        "dam_length": "{{convert|1700|ft|m|abbr=on}}",
+        "dam_height": "{{convert|741|ft|m|abbr=on}}",
+        "res_capacity_total": "7.551 million megalitres (266.70 tmc ft)",
+        "res_catchment": "56980&nbsp;km<sup>2</sup>",
+        "res_surface": "168.35 km<sup>2</sup>",
+        "plant_capacity": "1325 [[megawatt|MW]]",
+        "res_capacity_active": "6.007 million megalitres"
+      },
+      "source": "https://en.wikipedia.org/wiki/Bhakra%20Dam"
+    }
+  }
+}

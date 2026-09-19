@@ -113,6 +113,69 @@ def macdonald_langridge(volume_m3: float, h_breach: float,
     return max(b_avg, 0.5 * hb), max(t_f, 600.0)
 
 
+# --- Xu & Zhang (2009) ------------------------------------------------------
+# Xu, Y. and Zhang, L.M. (2009). "Breaching Parameters for Earth and Rockfill
+# Dams." J. Geotech. Geoenviron. Eng. 135(12), 1957-1970.
+#
+# Fitted to 182 earth and rockfill failures from the USA and China, with
+# deliberate coverage of dams taller than 15 m -- the reason it is worth having
+# alongside Froehlich, whose sample skews small.  Coefficients below are the
+# "best" (multiplicative) forms as tabulated by USBR HL-2014-02 Table 4.
+#
+# USBR's evaluation found the Xu & Zhang FAILURE TIME equations "dramatically
+# overpredict" the breach formation time, so only the geometry and peak-flow
+# forms are used here; timing stays with Froehlich and Von Thun & Gillette.
+XZ_HR = 15.0                      # reference height, m
+
+_XZ_DAM_TYPE = {"core": 0.061, "concrete_face": 0.088, "homogeneous": -0.089}
+_XZ_MODE = {"overtopping": 0.299, "piping": -0.239}
+_XZ_EROD = {"high": 0.411, "medium": -0.062, "low": -0.289}
+
+_XZ_AVG_DAM_TYPE = {"core": -0.041, "concrete_face": 0.026, "homogeneous": -0.226}
+_XZ_AVG_MODE = {"overtopping": 0.149, "piping": -0.389}
+_XZ_AVG_EROD = {"high": 0.291, "medium": -0.140, "low": -0.391}
+
+_XZ_Q_DAM_TYPE = {"core": -0.503, "concrete_face": -0.591, "homogeneous": -0.649}
+_XZ_Q_MODE = {"overtopping": -0.705, "piping": -1.039}
+_XZ_Q_EROD = {"high": -0.007, "medium": -0.375, "low": -1.362}
+
+
+def xu_zhang_2009(volume_m3: float, h_dam: float, h_water: float,
+                  h_breach: float, mode: str = "overtopping",
+                  dam_type: str = "core",
+                  erodibility: str = "medium") -> Dict[str, float]:
+    """Xu & Zhang (2009) average breach width, top width and peak outflow.
+
+    Returns metres and m3/s.  `erodibility` is the dominant control: USBR
+    HL-2014-02 Table 3 reports that moving one category changes the predicted
+    average width by roughly a factor 0.67 (low) to 1.68 (high) and the peak
+    outflow by 0.37 to 1.44, independent of dam scale.
+    """
+    vw = max(volume_m3, 1.0)
+    hd = max(h_dam, 1.0)
+    hw = max(h_water, 1.0)
+    hb = max(h_breach, 1.0)
+    v13_hw = (vw ** (1.0 / 3.0)) / hw
+
+    b2 = (_XZ_DAM_TYPE.get(dam_type, _XZ_DAM_TYPE["core"])
+          + _XZ_MODE.get(mode, _XZ_MODE["overtopping"])
+          + _XZ_EROD.get(erodibility, _XZ_EROD["medium"]))
+    b_top = hb * 1.062 * ((hd / XZ_HR) ** 0.092) * (v13_hw ** 0.508) * math.exp(b2)
+
+    b3 = (_XZ_AVG_DAM_TYPE.get(dam_type, _XZ_AVG_DAM_TYPE["core"])
+          + _XZ_AVG_MODE.get(mode, _XZ_AVG_MODE["overtopping"])
+          + _XZ_AVG_EROD.get(erodibility, _XZ_AVG_EROD["medium"]))
+    b_avg = hb * 0.787 * ((hd / XZ_HR) ** 0.133) * (v13_hw ** 0.652) * math.exp(b3)
+
+    b4 = (_XZ_Q_DAM_TYPE.get(dam_type, _XZ_Q_DAM_TYPE["core"])
+          + _XZ_Q_MODE.get(mode, _XZ_Q_MODE["overtopping"])
+          + _XZ_Q_EROD.get(erodibility, _XZ_Q_EROD["medium"]))
+    qp = (0.175 * ((hd / XZ_HR) ** 0.199) * (v13_hw ** -1.274) * math.exp(b4)
+          * math.sqrt(G) * (vw ** (5.0 / 6.0)))
+
+    return {"b_avg": b_avg, "b_top": b_top, "peak_q": qp}
+
+
 def costa_schuster_peak(volume_m3: float, head_m: float) -> float:
     """Costa & Schuster (1988) peak-discharge envelope for landslide dams.
 
@@ -377,6 +440,96 @@ def simulate_breach(
     return res
 
 
+def regression_ensemble(volume_m3: float, h_dam: float, h_water: float,
+                        h_breach: float, mode: str = "overtopping",
+                        dam_type: str = "core",
+                        erodibility: str = "medium") -> Dict[str, object]:
+    """Every applicable breach regression, reported as a spread not a number.
+
+    This is the practice USBR HL-2014-02 prescribes for exactly the situation a
+    260 m Himalayan dam puts us in:
+
+        "the uncertainty of the regression relationships is still large due to
+        inherent uncertainty in the data for the underlying case studies, so it
+        should remain common practice to apply multiple regression equations to
+        most dams as a means of evaluating prediction uncertainty"
+
+    and, on dams larger than anything in the databases:
+
+        "This evaluation study did not suggest that there is a size or scale
+        limitation for the equations ... it is reasonable, when necessary, to
+        extend the equations for application to dams even larger than those
+        included in the database as one component of a coordinated strategy to
+        predict breach behaviour by a variety of methods."
+
+    So the answer to "your dam is outside the calibration range" is not to pick
+    one regression and hope, and not to refuse: it is to run them all, report
+    the envelope, and let the physically routed solution sit inside a declared
+    band of empirical uncertainty.
+    """
+    members: List[dict] = []
+
+    b_f, t_f = froehlich_2008(volume_m3, h_breach, mode)
+    members.append({"method": "Froehlich (2008)", "b_avg_m": b_f,
+                    "t_form_s": t_f,
+                    "reference": "J. Hydraulic Eng. 134(12), 1708-1721",
+                    "fitted_to": "74 embankment failures, mostly < 60 m high"})
+
+    b_v, t_v = von_thun_gillette(volume_m3, h_water, erodibility)
+    members.append({"method": "Von Thun & Gillette (1990)", "b_avg_m": b_v,
+                    "t_form_s": t_v,
+                    "reference": "ASCE dam-breach workshop",
+                    "fitted_to": "57 embankment failures"})
+
+    b_m, t_m = macdonald_langridge(volume_m3, h_breach)
+    members.append({"method": "MacDonald & Langridge-Monopolis (1984)",
+                    "b_avg_m": b_m, "t_form_s": t_m,
+                    "reference": "J. Hydraulic Eng. 110(5), 567-586",
+                    "fitted_to": "42 embankment failures"})
+
+    xz = xu_zhang_2009(volume_m3, h_dam, h_water, h_breach, mode,
+                       dam_type, erodibility)
+    members.append({"method": "Xu & Zhang (2009)", "b_avg_m": xz["b_avg"],
+                    "b_top_m": xz["b_top"], "peak_q_m3s": xz["peak_q"],
+                    "t_form_s": None,
+                    "reference": "J. Geotech. Geoenviron. Eng. 135(12), 1957-1970",
+                    "fitted_to": ("182 earth and rockfill failures (USA and "
+                                  "China), ~50% taller than 15 m"),
+                    "note": ("Failure-time equations omitted: USBR HL-2014-02 "
+                             "found they dramatically overpredict formation "
+                             "time.")})
+
+    widths = [m["b_avg_m"] for m in members if m.get("b_avg_m")]
+    times = [m["t_form_s"] for m in members if m.get("t_form_s")]
+    return {
+        "members": [{k: (round(v, 2) if isinstance(v, float) else v)
+                     for k, v in m.items()} for m in members],
+        "b_avg_m": {"min": round(min(widths), 1), "max": round(max(widths), 1),
+                    "median": round(float(np.median(widths)), 1),
+                    "spread_ratio": round(max(widths) / max(min(widths), 1e-9), 2)},
+        "t_form_s": {"min": round(min(times), 1), "max": round(max(times), 1),
+                     "median": round(float(np.median(times)), 1),
+                     "spread_ratio": round(max(times) / max(min(times), 1e-9), 2)},
+        "erodibility_assumed": erodibility,
+        "erodibility_sensitivity": {
+            "note": ("USBR HL-2014-02 Table 3: relative to medium erodibility, "
+                     "low gives 0.67x and high 1.68x the average breach width, "
+                     "and 0.37x / 1.44x the peak outflow, near-independently "
+                     "of dam scale."),
+            "b_avg_low": round(float(np.median(widths)) * 0.67, 1),
+            "b_avg_high": round(float(np.median(widths)) * 1.68, 1),
+        },
+        "guidance": (
+            "USBR HL-2014-02 (Wahl et al.): apply multiple regressions to "
+            "evaluate prediction uncertainty, and extending them beyond the "
+            "database size range is reasonable as one component of a "
+            "multi-method strategy. The spread above IS the empirical "
+            "uncertainty; the routed hydrograph is the primary estimate."),
+        "source": ("Wahl, T.L. et al. (2014). Evaluation of Erodibility-Based "
+                   "Embankment Dam Breach Equations. USBR HL-2014-02."),
+    }
+
+
 def sanity_checks(res: BreachResult, reservoir: Reservoir, v0: float,
                   inflow_total: float, h_init: float) -> Dict[str, object]:
     """Solver verification gate.
@@ -403,6 +556,17 @@ def sanity_checks(res: BreachResult, reservoir: Reservoir, v0: float,
     # explicitly instead of returning a bare "fail" a reviewer cannot interpret.
     in_calibration = (v0 <= 1.0e9) and (head <= 100.0)
 
+    # The empirical spread across ALL applicable regressions, which is what
+    # USBR HL-2014-02 says to report when a structure is outside any single
+    # regression's fitted range. Xu & Zhang (2009) also yields a peak-flow
+    # prediction from a database that deliberately includes large dams, so it
+    # is a third, better-matched envelope for a structure this size.
+    # h_dam is not carried on BreachResult; at failure the water depth at the
+    # dam is the closest available proxy for the structure height, which is
+    # what Xu & Zhang's Hd/Hr term needs.
+    xz = xu_zhang_2009(v0, head, head, res.geometry.height)
+    q_xz = xz["peak_q"]
+
     return {
         "mass_balance": {
             "v_initial_mcm": round(v0 / 1e6, 3),
@@ -419,6 +583,8 @@ def sanity_checks(res: BreachResult, reservoir: Reservoir, v0: float,
             "costa_schuster_1988_m3s": round(q_cs, 1),
             "ratio_to_froehlich": round(res.peak_q / q_fro, 3) if q_fro else None,
             "ratio_to_costa_schuster": round(res.peak_q / q_cs, 3) if q_cs else None,
+            "xu_zhang_2009_m3s": round(q_xz, 1),
+            "ratio_to_xu_zhang": round(res.peak_q / q_xz, 3) if q_xz else None,
             "within_envelope": bool(envelope_ok),
             "within_regression_calibration_range": bool(in_calibration),
             "reservoir_volume_mcm": round(v0 / 1e6, 1),
@@ -427,10 +593,13 @@ def sanity_checks(res: BreachResult, reservoir: Reservoir, v0: float,
             "interpretation": (
                 "Routed peak agrees with the published envelopes."
                 if envelope_ok else
-                ("Routed peak lies outside the published envelopes, but this "
-                 "reservoir is outside the range those regressions were fitted "
-                 "to (<~1 km3, <~100 m head), so the physically routed value is "
-                 "the primary estimate and the envelopes are context only."
+                ("Routed peak lies outside the Froehlich/Costa-Schuster "
+                 "envelopes, which were fitted to dams far smaller than this "
+                 "one (<~1 km3, <~100 m head). Per USBR HL-2014-02 the right "
+                 "response is a multi-regression spread, reported under "
+                 "breach.regression_ensemble, with the routed hydrograph as "
+                 "the primary estimate; Xu & Zhang (2009) is the envelope "
+                 "fitted to the largest sample of tall dams."
                  if not in_calibration else
                  "Routed peak disagrees with the envelopes INSIDE their "
                  "calibration range - investigate the breach geometry.")),

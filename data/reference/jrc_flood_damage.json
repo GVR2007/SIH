@@ -1,0 +1,1139 @@
+{
+ "_citation": "Huizinga, J., De Moel, H., Szewczyk, W. (2017). Global flood depth-damage functions: Methodology and the database with guidelines. EUR 28552 EN, Publications Office of the European Union. doi:10.2760/16510, JRC105688.",
+ "_source_pdf": "https://publications.jrc.ec.europa.eu/repository/bitstream/JRC105688/global_flood_depth-damage_functions__10042017.pdf",
+ "_extracted_utc": "2026-09-19T16:35:11.777032Z",
+ "_notes": {
+  "curves": "Tables 3-1..3-20, average continental damage functions. Damage factor is dimensionless 0-1.",
+  "global_generic": "Table 5-4, generic global functions where no continental curve exists.",
+  "construction_costs": "Appendix B Table B-2, EUR/m2 at 2010 price level. RES/COM/IND = residential/commercial/industrial.",
+  "agriculture_va_ha": "Appendix A, agricultural value added per hectare, US$ (World Bank WDI).",
+  "infrastructure_asia_eur_per_m": "Section 3.2.5: average maximum damage for Asia infrastructure is 17 EUR/m (2010)."
+ },
+ "curves": {
+  "Africa": {
+   "residential": {
+    "depth_m": [
+     0.0,
+     0.5,
+     1.0,
+     1.5,
+     2.0,
+     3.0,
+     4.0,
+     5.0,
+     6.0
+    ],
+    "damage_factor": [
+     0.0,
+     0.22,
+     0.38,
+     0.53,
+     0.64,
+     0.82,
+     0.9,
+     0.96,
+     1.0
+    ]
+   },
+   "industrial": {
+    "depth_m": [
+     0.0,
+     0.5,
+     1.0,
+     1.5,
+     2.0,
+     3.0,
+     4.0,
+     5.0,
+     6.0
+    ],
+    "damage_factor": [
+     0.0,
+     0.06,
+     0.25,
+     0.4,
+     0.49,
+     0.68,
+     0.92,
+     1.0,
+     1.0
+    ]
+   },
+   "agriculture": {
+    "depth_m": [
+     0.0,
+     0.5,
+     1.0,
+     1.5,
+     2.0,
+     3.0,
+     4.0,
+     5.0,
+     6.0
+    ],
+    "damage_factor": [
+     0.0,
+     0.24,
+     0.47,
+     0.74,
+     0.92,
+     1.0,
+     1.0,
+     1.0,
+     1.0
+    ]
+   }
+  },
+  "Asia": {
+   "residential": {
+    "depth_m": [
+     0.0,
+     0.5,
+     1.0,
+     1.5,
+     2.0,
+     3.0,
+     4.0,
+     5.0,
+     6.0
+    ],
+    "damage_factor": [
+     0.0,
+     0.33,
+     0.49,
+     0.62,
+     0.72,
+     0.87,
+     0.93,
+     0.98,
+     1.0
+    ]
+   },
+   "commercial": {
+    "depth_m": [
+     0.0,
+     0.5,
+     1.0,
+     1.5,
+     2.0,
+     3.0,
+     4.0,
+     5.0,
+     6.0
+    ],
+    "damage_factor": [
+     0.0,
+     0.38,
+     0.54,
+     0.66,
+     0.76,
+     0.88,
+     0.94,
+     0.98,
+     1.0
+    ]
+   },
+   "industrial": {
+    "depth_m": [
+     0.0,
+     0.5,
+     1.0,
+     1.5,
+     2.0,
+     3.0,
+     4.0,
+     5.0,
+     6.0
+    ],
+    "damage_factor": [
+     0.0,
+     0.28,
+     0.48,
+     0.63,
+     0.72,
+     0.86,
+     0.91,
+     0.96,
+     1.0
+    ]
+   },
+   "transport": {
+    "depth_m": [
+     0.0,
+     0.5,
+     1.0,
+     1.5,
+     2.0,
+     3.0,
+     4.0,
+     5.0,
+     6.0
+    ],
+    "damage_factor": [
+     0.0,
+     0.36,
+     0.57,
+     0.73,
+     0.85,
+     1.0,
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "infrastructure": {
+    "depth_m": [
+     0.0,
+     0.5,
+     1.0,
+     1.5,
+     2.0,
+     3.0,
+     4.0,
+     5.0,
+     6.0
+    ],
+    "damage_factor": [
+     0.0,
+     0.25,
+     0.42,
+     0.55,
+     0.65,
+     0.8,
+     0.9,
+     1.0,
+     1.0
+    ]
+   },
+   "agriculture": {
+    "depth_m": [
+     0.0,
+     0.5,
+     1.0,
+     1.5,
+     2.0,
+     3.0,
+     4.0,
+     5.0,
+     6.0
+    ],
+    "damage_factor": [
+     0.0,
+     0.17,
+     0.37,
+     0.51,
+     0.56,
+     0.69,
+     0.83,
+     0.97,
+     1.0
+    ]
+   }
+  },
+  "Oceania": {
+   "residential": {
+    "depth_m": [
+     0.0,
+     0.5,
+     1.0,
+     1.5,
+     2.0,
+     3.0,
+     4.0,
+     5.0,
+     6.0
+    ],
+    "damage_factor": [
+     0.04,
+     0.48,
+     0.64,
+     0.71,
+     0.79,
+     0.93,
+     0.97,
+     0.98,
+     1.0
+    ]
+   },
+   "commercial": {
+    "depth_m": [
+     0.0,
+     0.5,
+     1.0,
+     1.5,
+     2.0,
+     3.0,
+     4.0,
+     5.0,
+     6.0
+    ],
+    "damage_factor": [
+     0.0,
+     0.24,
+     0.48,
+     0.67,
+     0.86,
+     1.0,
+     1.0,
+     1.0,
+     1.0
+    ]
+   }
+  },
+  "North America": {
+   "residential": {
+    "depth_m": [
+     0.0,
+     0.5,
+     1.0,
+     1.5,
+     2.0,
+     3.0,
+     4.0,
+     5.0,
+     6.0
+    ],
+    "damage_factor": [
+     0.2,
+     0.44,
+     0.58,
+     0.68,
+     0.78,
+     0.85,
+     0.92,
+     0.96,
+     1.0
+    ]
+   },
+   "commercial": {
+    "depth_m": [
+     0.0,
+     0.5,
+     1.0,
+     1.5,
+     2.0,
+     3.0,
+     4.0,
+     5.0,
+     6.0
+    ],
+    "damage_factor": [
+     0.02,
+     0.24,
+     0.37,
+     0.47,
+     0.55,
+     0.69,
+     0.82,
+     0.91,
+     1.0
+    ]
+   },
+   "industrial": {
+    "depth_m": [
+     0.0,
+     0.5,
+     1.0,
+     1.5,
+     2.0,
+     3.0,
+     4.0,
+     5.0,
+     6.0
+    ],
+    "damage_factor": [
+     0.02,
+     0.31,
+     0.48,
+     0.61,
+     0.71,
+     0.84,
+     0.93,
+     0.98,
+     1.0
+    ]
+   },
+   "agriculture": {
+    "depth_m": [
+     0.0,
+     0.5,
+     1.0,
+     1.5,
+     2.0,
+     3.0,
+     4.0,
+     5.0,
+     6.0
+    ],
+    "damage_factor": [
+     0.02,
+     0.27,
+     0.48,
+     0.56,
+     0.61,
+     0.76,
+     0.88,
+     0.95,
+     1.0
+    ]
+   }
+  },
+  "South America": {
+   "residential": {
+    "depth_m": [
+     0.0,
+     0.5,
+     1.0,
+     1.5,
+     2.0,
+     3.0,
+     4.0,
+     5.0,
+     6.0
+    ],
+    "damage_factor": [
+     0.0,
+     0.49,
+     0.71,
+     0.84,
+     0.95,
+     0.98,
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "commercial": {
+    "depth_m": [
+     0.0,
+     0.5,
+     1.0,
+     1.5,
+     2.0,
+     3.0,
+     4.0,
+     5.0,
+     6.0
+    ],
+    "damage_factor": [
+     0.0,
+     0.61,
+     0.84,
+     0.92,
+     0.99,
+     1.0,
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "industrial": {
+    "depth_m": [
+     0.0,
+     0.5,
+     1.0,
+     1.5,
+     2.0,
+     3.0,
+     4.0,
+     5.0,
+     6.0
+    ],
+    "damage_factor": [
+     0.0,
+     0.67,
+     0.89,
+     0.95,
+     1.0,
+     1.0,
+     1.0,
+     1.0,
+     1.0
+    ]
+   },
+   "transport": {
+    "depth_m": [
+     0.0,
+     0.5,
+     1.0,
+     1.5,
+     2.0,
+     3.0,
+     4.0,
+     5.0,
+     6.0
+    ],
+    "damage_factor": [
+     0.0,
+     0.09,
+     0.18,
+     0.6,
+     0.84,
+     1.0,
+     1.0,
+     1.0,
+     1.0
+    ]
+   }
+  }
+ },
+ "global_generic": {
+  "agriculture": {
+   "depth_m": [
+    0,
+    0.5,
+    1,
+    1.5,
+    2,
+    3,
+    4,
+    5,
+    6
+   ],
+   "damage_factor": [
+    0.0,
+    0.23,
+    0.39,
+    0.55,
+    0.65,
+    0.78,
+    0.87,
+    0.96,
+    1.0
+   ]
+  },
+  "infrastructure": {
+   "depth_m": [
+    0,
+    0.5,
+    1,
+    1.5,
+    2,
+    3,
+    4,
+    5,
+    6
+   ],
+   "damage_factor": [
+    0.0,
+    0.22,
+    0.43,
+    0.58,
+    0.67,
+    0.79,
+    0.89,
+    0.97,
+    1.0
+   ]
+  }
+ },
+ "construction_costs_eur_m2_2010": {
+  "Abu Dhabi": {
+   "ec_harris_2010": {
+    "res": 1506,
+    "com": 1335,
+    "ind": 999
+   }
+  },
+  "Australia": {
+   "ec_harris_2010": {
+    "res": 1640,
+    "com": 1760,
+    "ind": 1050
+   },
+   "turner_townsend_2013": {
+    "res": 1246,
+    "com": 1553,
+    "ind": 695
+   }
+  },
+  "Austria": {
+   "ec_harris_2010": {
+    "res": 1485,
+    "com": 1540,
+    "ind": 915
+   }
+  },
+  "Bahrain": {
+   "ec_harris_2010": {
+    "res": 1644,
+    "com": 1445,
+    "ind": 1099
+   }
+  },
+  "Belgium": {
+   "ec_harris_2010": {
+    "res": 1431,
+    "com": 1478,
+    "ind": 983
+   }
+  },
+  "Bosnia & Herzegovina": {
+   "ec_harris_2010": {
+    "res": 793,
+    "com": 745,
+    "ind": 515
+   }
+  },
+  "Brazil": {
+   "turner_townsend_2013": {
+    "res": 613,
+    "com": 846,
+    "ind": 689
+   }
+  },
+  "Bulgaria": {
+   "ec_harris_2010": {
+    "res": 584,
+    "com": 866,
+    "ind": 618
+   }
+  },
+  "Cameroon": {
+   "ec_harris_2010": {
+    "res": 511,
+    "com": 425,
+    "ind": 394
+   }
+  },
+  "Canada": {
+   "ec_harris_2010": {
+    "res": 1859,
+    "com": 1444,
+    "ind": 1086
+   },
+   "turner_townsend_2013": {
+    "res": 1725,
+    "com": 1683,
+    "ind": 776
+   }
+  },
+  "China": {
+   "ec_harris_2010": {
+    "res": 398,
+    "com": 594,
+    "ind": 518
+   },
+   "turner_townsend_2013": {
+    "res": 486,
+    "com": 593,
+    "ind": 422
+   }
+  },
+  "Croatia": {
+   "ec_harris_2010": {
+    "res": 1027,
+    "com": 1041,
+    "ind": 639
+   }
+  },
+  "Czech Republic": {
+   "ec_harris_2010": {
+    "res": 1065,
+    "com": 922,
+    "ind": 534
+   }
+  },
+  "Denmark": {
+   "ec_harris_2010": {
+    "res": 2082,
+    "com": 2129,
+    "ind": 1810
+   }
+  },
+  "Egypt": {
+   "ec_harris_2010": {
+    "res": 685,
+    "com": 868,
+    "ind": 529
+   }
+  },
+  "Finland": {
+   "ec_harris_2010": {
+    "res": 1854,
+    "com": 2004,
+    "ind": 1250
+   }
+  },
+  "France": {
+   "ec_harris_2010": {
+    "res": 1621,
+    "com": 1534,
+    "ind": 1070
+   }
+  },
+  "Germany": {
+   "ec_harris_2010": {
+    "res": 2159,
+    "com": 1494,
+    "ind": 978
+   },
+   "turner_townsend_2013": {
+    "res": 1067,
+    "com": 1733,
+    "ind": 963
+   }
+  },
+  "Ghana": {
+   "ec_harris_2010": {
+    "res": 385,
+    "com": 512,
+    "ind": 304
+   }
+  },
+  "Greece": {
+   "ec_harris_2010": {
+    "res": 1108,
+    "com": 989,
+    "ind": 716
+   }
+  },
+  "Hong Kong": {
+   "ec_harris_2010": {
+    "res": 1746,
+    "com": 1173
+   },
+   "turner_townsend_2013": {
+    "res": 2225,
+    "com": 2021,
+    "ind": 1519
+   }
+  },
+  "Hungary": {
+   "ec_harris_2010": {
+    "res": 750,
+    "com": 897,
+    "ind": 705
+   }
+  },
+  "India": {
+   "turner_townsend_2013": {
+    "res": 338,
+    "com": 349,
+    "ind": 369
+   }
+  },
+  "Indonesia": {
+   "ec_harris_2010": {
+    "res": 505,
+    "com": 454,
+    "ind": 342
+   }
+  },
+  "Ireland": {
+   "ec_harris_2010": {
+    "res": 1696,
+    "com": 1932,
+    "ind": 1040
+   },
+   "turner_townsend_2013": {
+    "res": 1228,
+    "com": 1812,
+    "ind": 937
+   }
+  },
+  "Italy": {
+   "ec_harris_2010": {
+    "res": 1365,
+    "com": 1607,
+    "ind": 740
+   }
+  },
+  "Japan": {
+   "turner_townsend_2013": {
+    "res": 1656,
+    "com": 2332,
+    "ind": 2071
+   }
+  },
+  "Latvia": {
+   "ec_harris_2010": {
+    "res": 889,
+    "com": 812,
+    "ind": 697
+   }
+  },
+  "Macedonia": {
+   "ec_harris_2010": {
+    "res": 760,
+    "com": 746,
+    "ind": 508
+   }
+  },
+  "Malaysia": {
+   "ec_harris_2010": {
+    "res": 406,
+    "com": 461,
+    "ind": 420
+   },
+   "turner_townsend_2013": {
+    "res": 492,
+    "com": 909,
+    "ind": 607
+   }
+  },
+  "Netherlands": {
+   "ec_harris_2010": {
+    "res": 1015,
+    "com": 1365,
+    "ind": 958
+   },
+   "turner_townsend_2013": {
+    "res": 1253,
+    "com": 1875,
+    "ind": 903
+   }
+  },
+  "New Zealand": {
+   "ec_harris_2010": {
+    "res": 1559,
+    "com": 1633,
+    "ind": 997
+   }
+  },
+  "Oman": {
+   "ec_harris_2010": {
+    "res": 1477,
+    "com": 1289,
+    "ind": 979
+   },
+   "turner_townsend_2013": {
+    "res": 1252,
+    "com": 1289,
+    "ind": 904
+   }
+  },
+  "Poland": {
+   "ec_harris_2010": {
+    "res": 1092,
+    "com": 1105,
+    "ind": 682
+   },
+   "turner_townsend_2013": {
+    "res": 554,
+    "com": 696,
+    "ind": 424
+   }
+  },
+  "Portugal": {
+   "ec_harris_2010": {
+    "res": 837,
+    "com": 898,
+    "ind": 487
+   }
+  },
+  "Qatar": {
+   "ec_harris_2010": {
+    "res": 1494,
+    "com": 1362,
+    "ind": 1019
+   },
+   "turner_townsend_2013": {
+    "res": 1283,
+    "com": 1420,
+    "ind": 782
+   }
+  },
+  "Romania": {
+   "ec_harris_2010": {
+    "res": 816,
+    "com": 832,
+    "ind": 563
+   }
+  },
+  "Russia": {
+   "ec_harris_2010": {
+    "res": 1089,
+    "com": 1108,
+    "ind": 513
+   },
+   "turner_townsend_2013": {
+    "res": 878,
+    "com": 1141,
+    "ind": 745
+   }
+  },
+  "Saudi Arabia": {
+   "ec_harris_2010": {
+    "res": 1417,
+    "com": 1236,
+    "ind": 939
+   }
+  },
+  "Serbia": {
+   "ec_harris_2010": {
+    "res": 830,
+    "com": 806,
+    "ind": 531
+   }
+  },
+  "Singapore": {
+   "ec_harris_2010": {
+    "res": 1683,
+    "com": 1513,
+    "ind": 1103
+   },
+   "turner_townsend_2013": {
+    "res": 1807,
+    "com": 1428,
+    "ind": 1383
+   }
+  },
+  "Slovakia": {
+   "ec_harris_2010": {
+    "res": 828,
+    "com": 805,
+    "ind": 592
+   }
+  },
+  "South Africa": {
+   "ec_harris_2010": {
+    "res": 579,
+    "com": 641,
+    "ind": 413
+   },
+   "turner_townsend_2013": {
+    "res": 525,
+    "com": 598,
+    "ind": 341
+   }
+  },
+  "South Korea": {
+   "ec_harris_2010": {
+    "res": 1178,
+    "com": 1128,
+    "ind": 797
+   },
+   "turner_townsend_2013": {
+    "res": 869,
+    "com": 920,
+    "ind": 886
+   }
+  },
+  "Spain": {
+   "ec_harris_2010": {
+    "res": 1099,
+    "com": 1134,
+    "ind": 503
+   }
+  },
+  "Sri Lanka": {
+   "ec_harris_2010": {
+    "res": 377,
+    "com": 350,
+    "ind": 326
+   }
+  },
+  "Sweden": {
+   "ec_harris_2010": {
+    "res": 1688,
+    "com": 1695,
+    "ind": 1319
+   }
+  },
+  "Switzerland": {
+   "ec_harris_2010": {
+    "res": 2117,
+    "com": 2343,
+    "ind": 1723
+   }
+  },
+  "Taiwan": {
+   "ec_harris_2010": {
+    "res": 301,
+    "com": 426,
+    "ind": 317
+   }
+  },
+  "Thailand": {
+   "ec_harris_2010": {
+    "res": 842,
+    "com": 756,
+    "ind": 596
+   }
+  },
+  "Turkey": {
+   "ec_harris_2010": {
+    "res": 899,
+    "com": 1055,
+    "ind": 739
+   }
+  },
+  "Uganda": {
+   "turner_townsend_2013": {
+    "res": 304,
+    "com": 488,
+    "ind": 292
+   }
+  },
+  "United Arab Emirates": {
+   "turner_townsend_2013": {
+    "res": 1367,
+    "com": 1408,
+    "ind": 982
+   }
+  },
+  "Ukraine": {
+   "ec_harris_2010": {
+    "res": 719,
+    "com": 801,
+    "ind": 292
+   }
+  },
+  "United Kingdom": {
+   "ec_harris_2010": {
+    "res": 1600,
+    "com": 1557,
+    "ind": 875
+   },
+   "turner_townsend_2013": {
+    "res": 1655,
+    "com": 2098,
+    "ind": 1176
+   }
+  },
+  "USA": {
+   "ec_harris_2010": {
+    "res": 1171,
+    "com": 1369,
+    "ind": 793
+   },
+   "turner_townsend_2013": {
+    "res": 1186,
+    "com": 1460,
+    "ind": 908
+   }
+  },
+  "Vietnam": {
+   "turner_townsend_2013": {
+    "res": 379,
+    "com": 430,
+    "ind": 301
+   }
+  }
+ },
+ "agriculture_va_usd_ha": {
+  "Central African Republic": 207,
+  "Norway": 5416,
+  "Chad": 116,
+  "Oman": 466,
+  "Channel Islands                     Pakistan": 1693,
+  "Chile": 444,
+  "Palau": 2038,
+  "China": 1224,
+  "Panama": 472,
+  "Colombia": 438,
+  "Comoros": 1400,
+  "Paraguay": 189,
+  "Congo, Dem. Rep.": 193,
+  "Congo, Rep.": 45,
+  "Philippines": 2120,
+  "Costa Rica": 1204,
+  "Poland": 867,
+  "Cote d'Ivoire": 289,
+  "Portugal": 1255,
+  "Croatia": 1951,
+  "Puerto Rico": 3692,
+  "Cuba": 406,
+  "Qatar": 2275,
+  "Curacao                             Romania": 787,
+  "Cyprus": 3805,
+  "Russian Federation": 281,
+  "Czech Republic": 983,
+  "Rwanda": 1021,
+  "Denmark": 1439,
+  "Samoa": 1990,
+  "Dominica": 2447,
+  "Sao Tome and Principe": 782,
+  "Dominican Republic": 1309,
+  "Saudi Arabia": 73,
+  "Ecuador": 903,
+  "Senegal": 210,
+  "Egypt, Arab Rep.": 7892,
+  "Serbia": 725,
+  "El Salvador": 1626,
+  "Seychelles": 7411,
+  "Equatorial Guinea                   Sierra Leone": 426,
+  "Eritrea": 33,
+  "Singapore": 122070,
+  "Estonia": 671,
+  "Ethiopia": 407,
+  "Slovak Republic": 1519,
+  "Faeroe Islands                      Slovenia": 1882,
+  "Fiji": 792,
+  "Finland": 2615,
+  "France": 1473,
+  "South Africa": 85,
+  "Gabon": 128,
+  "Spain": 1214,
+  "Gambia, The": 388,
+  "Sri Lanka": 2365,
+  "Georgia": 408,
+  "St. Kitts and Nevis": 1730,
+  "Germany": 1568,
+  "St. Lucia": 3290,
+  "Ghana": 560,
+  "Greenland                           Sudan": 120,
+  "Grenada": 3239,
+  "Suriname": 4941,
+  "Guam                                Swaziland": 167,
+  "Guatemala": 1096,
+  "Sweden": 2280,
+  "Guinea": 72,
+  "Switzerland": 2889,
+  "Guinea-Bissau": 256,
+  "Guyana": 275,
+  "Tajikistan": 266,
+  "Haiti": 714,
+  "Tanzania": 160,
+  "Honduras": 633,
+  "Thailand": 1833,
+  "Hong Kong SAR, China": 25346,
+  "Timor-Leste": 516,
+  "Hungary": 848,
+  "Togo": 303,
+  "Iceland": 502,
+  "Tonga": 2026,
+  "India": 1489,
+  "Trinidad and Tobago": 2265,
+  "Indonesia": 1904,
+  "Tunisia": 365,
+  "Iran, Islamic Rep.              Turkey": 1508,
+  "Iraq": 884,
+  "Turkmenistan": 103,
+  "Ireland": 618,
+  "Isle of Man                     Tuvalu": 4597,
+  "Israel": 6588,
+  "Uganda": 265,
+  "Italy": 2918,
+  "Ukraine": 285,
+  "Jamaica": 1665,
+  "United Arab Emirates": 6020,
+  "Japan": 13841,
+  "United Kingdom": 850,
+  "Jordan": 726,
+  "United States": 416,
+  "Kazakhstan": 38,
+  "Uruguay": 235,
+  "Kenya": 371,
+  "Uzbekistan": 264,
+  "Kiribati": 977,
+  "Vanuatu": 819,
+  "Korea, Dem. Rep.                Venezuela, RB": 827,
+  "Korea, Rep.": 13788,
+  "Vietnam": 2271,
+  "Kuwait": 4100,
+  "West Bank and Gaza": 1760,
+  "Kyrgyz Republic": 95,
+  "Lao PDR": 904,
+  "Zambia": 90,
+  "Latvia": 471,
+  "Zimbabwe": 69,
+  "Abu Dhabi": 1506
+ },
+ "infrastructure_eur_per_m_2010": {
+  "Asia": 17,
+  "Europe": 24,
+  "Oceania": 29
+ }
+}

@@ -113,8 +113,26 @@ button.primary{background:linear-gradient(180deg,#5cb2ff,#3d93e6);box-shadow:0 1
   <aside>
     <div class="sec">
       <h2>Study area</h2>
-      <label>Dam / barrier preset</label>
-      <select id="preset"></select>
+      <label>Source</label>
+      <select id="damsource">
+        <option value="preset">Worked presets (5)</option>
+        <option value="index">All India (Wikidata index)</option>
+      </select>
+
+      <div id="presetwrap">
+        <label>Dam / barrier preset</label>
+        <select id="preset"></select>
+      </div>
+
+      <div id="indexwrap" style="display:none">
+        <label>Search <span class="src" id="damcount"></span></label>
+        <input id="damsearch" placeholder="dam, river or district"/>
+        <select id="damlist" size="8" style="margin-top:6px;height:auto"></select>
+        <div class="note" style="margin-top:6px">Pick a dam, or click the map to
+          find dams near a point. The model domain is derived from the dam's
+          published height &mdash; a screening box, not a reportable one.</div>
+      </div>
+
       <div id="presetnote" class="src" style="margin-top:8px"></div>
     </div>
 
@@ -383,8 +401,96 @@ async function loadPresets(){
   sel.onchange();
 }
 
+// ---------------------------------------------------------------- dam index
+// The five presets are worked examples, not the limit of what runs: every
+// input layer is fetched on demand for whatever domain a dam implies, so any
+// dam in the national index is runnable.
+let damIndex = [], selectedDam = null;
+
+async function loadDamIndex(){
+  try{
+    const j = await (await fetch('/api/dams?country=IND&limit=1000')).json();
+    damIndex = j.dams || [];
+    $('#damcount').textContent = `(${j.total} dams, ${esc(j.source||'')})`;
+    renderDamList();
+  }catch(e){ $('#damcount').textContent = '(index unavailable)'; }
+}
+
+function renderDamList(filter){
+  const q = (filter||'').toLowerCase();
+  const rows = damIndex.filter(d => !q
+    || (d.name||'').toLowerCase().includes(q)
+    || (d.admin||'').toLowerCase().includes(q)
+    || (d.river||'').toLowerCase().includes(q)).slice(0,300);
+  const sel = $('#damlist'); sel.innerHTML='';
+  rows.forEach(d=>{
+    const o=document.createElement('option');
+    o.value=d.name;
+    o.textContent = d.height_m ? `${d.name} — ${d.height_m} m` : d.name;
+    o.title = [d.river, d.admin].filter(Boolean).join(', ');
+    sel.appendChild(o);
+  });
+  if(!rows.length){ const o=document.createElement('option'); o.textContent='no match'; o.disabled=true; sel.appendChild(o); }
+}
+
+$('#damsource').onchange = () => {
+  const idx = $('#damsource').value==='index';
+  $('#indexwrap').style.display = idx?'block':'none';
+  $('#presetwrap').style.display = idx?'none':'block';
+  if(idx && !damIndex.length) loadDamIndex();
+  if(!idx){ selectedDam=null; }
+};
+$('#damsearch').addEventListener('input', e=>renderDamList(e.target.value));
+$('#damlist').addEventListener('change', e=>{
+  selectedDam = e.target.value;
+  const d = damIndex.find(x=>x.name===selectedDam);
+  if(d){
+    $('#presetnote').innerHTML = `<b>${esc(d.name)}</b>${d.height_m?` — ${d.height_m} m`:''}<br/>
+      ${esc([d.river,d.admin].filter(Boolean).join(', '))}
+      <br/><span style="color:var(--dim)">${d.lat.toFixed(3)}, ${d.lon.toFixed(3)} · domain derived from height</span>`;
+    if(map) map.setView([d.lat,d.lon], 10);
+  }
+});
+
+// Click the map to find dams near a point.
+function enableDamPicking(){
+  if(!map) return;
+  map.on('click', async ev=>{
+    if($('#damsource').value!=='index') return;
+    const {lat,lng}=ev.latlng;
+    $('#presetnote').textContent='Looking for dams near that point...';
+    try{
+      const j=await (await fetch(`/api/dams/near?lat=${lat}&lon=${lng}&radius_deg=0.3`)).json();
+      if(!j.count){ $('#presetnote').textContent='No mapped dam within ~30 km of that point.'; return; }
+      $('#presetnote').innerHTML = `<b>${j.count} dam(s) near ${lat.toFixed(3)}, ${lng.toFixed(3)}</b><br/>` +
+        j.dams.slice(0,6).map(d=>`<a href="#" data-dam="${esc(d.name)}">${esc(d.name)}</a>`
+          + (d.height_m?` — ${d.height_m} m`:'') + ` <span style="color:var(--dim)">(${esc(d.source)})</span>`).join('<br/>');
+      $('#presetnote').querySelectorAll('a[data-dam]').forEach(a=>{
+        a.onclick = e => { e.preventDefault(); selectedDam = a.dataset.dam;
+          $('#presetnote').innerHTML = `Selected <b>${esc(selectedDam)}</b>. Press Run simulation.`; };
+      });
+    }catch(e){ $('#presetnote').textContent='Lookup failed: '+e.message; }
+  });
+}
+
 $('#run').onclick = async () => {
-  const body = {
+  const useIndex = $('#damsource').value==='index';
+  if(useIndex && !selectedDam){
+    $('#log').textContent='Pick a dam from the list, or click the map.'; return;
+  }
+  const body = useIndex ? {
+    dam_name: selectedDam, country:'IND',
+    barrier_type: $('#barrier_type').value,
+    failure_mode: $('#failure_mode').value,
+    growth_law: $('#growth_law').value,
+    loading: $('#loading').value,
+    res_m: parseFloat($('#res_m').value),
+    sim_hours: parseFloat($('#sim_hours').value),
+    breach_hours: parseFloat($('#sim_hours').value),
+    run_sph: $('#run_sph').value==='true',
+    sph_dp: parseFloat($('#sph_dp').value),
+    validation_mode: $('#validation_mode').value,
+  } : {
     preset: $('#preset').value,
     barrier_type: $('#barrier_type').value,
     failure_mode: $('#failure_mode').value,
@@ -532,14 +638,23 @@ function renderImpact(r){
     ${im.districts.slice(0,10).map(d=>`<tr><td>${esc(d.district)}</td><td class="n">${fmt(d.inundated_km2,2)}</td>
       <td class="n">${fmt(d.population_exposed,0)}</td></tr>`).join('')}</tbody></table>`:''}
 
-    <h2 style="font-size:11px;color:var(--dim);text-transform:uppercase;margin-top:14px">Indicative loss</h2>
+    <h2 style="font-size:11px;color:var(--dim);text-transform:uppercase;margin-top:14px">Indicative loss${
+      im.losses?.price_year?` <span style="text-transform:none;font-weight:400">(${esc(im.losses.currency)}, ${im.losses.price_year} prices)</span>`:''}</h2>
     <table><tbody>
       <tr><td>Buildings</td><td class="n">&#8377; ${fmt((im.losses?.buildings||0)/1e7,2)} cr</td></tr>
       <tr><td>Roads</td><td class="n">&#8377; ${fmt((im.losses?.roads||0)/1e7,2)} cr</td></tr>
       <tr><td>Cropland</td><td class="n">&#8377; ${fmt((im.losses?.cropland||0)/1e7,2)} cr</td></tr>
       <tr><td><b>Total</b></td><td class="n"><b>&#8377; ${fmt(im.losses?.total_crore,2)} cr</b></td></tr>
     </tbody></table>
-    <div class="note">${esc(im.losses?.caveat||'')}</div>`;
+    ${(im.losses?.line_items||[]).length?`<table style="margin-top:8px"><thead><tr><th>Component</th><th class="n">Qty</th>
+      <th class="n">Dmg frac</th><th class="n">Unit value</th></tr></thead><tbody>
+      ${im.losses.line_items.map(l=>`<tr><td>${esc(l.component)}<br/><span class="src">${esc(l.source||'')}</span></td>
+        <td class="n">${fmt(l.quantity,2)}<br/><span class="src">${esc(l.unit||'')}</span></td>
+        <td class="n">${fmt(l.damage_fraction,3)}</td>
+        <td class="n">${fmt(l.unit_value,0)}</td></tr>`).join('')}
+    </tbody></table>`:''}
+    <div class="note">${esc(im.losses?.caveat||'')}</div>
+    ${im.losses?.basis?`<div class="src" style="margin-top:6px">Basis: ${esc(im.losses.basis)}</div>`:''}`;
 }
 
 function renderModels(r){
@@ -1087,7 +1202,7 @@ $('#surfmode').onchange = e => {
 
 // ---------------------------------------------------------------- boot
 (async function(){
-  initMap(); buildLayerCtl();
+  initMap(); buildLayerCtl(); enableDamPicking();
   try{
     const h=await (await fetch('/api/health')).json();
     $('#engine').textContent = 'engine: '+(h.numba?'numba JIT':'numpy');

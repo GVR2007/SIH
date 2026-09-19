@@ -55,15 +55,20 @@ DEBRIS_FACTOR = {
     "open": 0.0,
 }
 
-# --- JRC (Huizinga et al. 2017) Asia depth-damage functions ----------------
-DD_DEPTHS = np.array([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0])
-DD_CURVES = {
-    "residential":    np.array([0.00, 0.35, 0.58, 0.73, 0.84, 0.95, 0.99, 1.00, 1.00]),
-    "commercial":     np.array([0.00, 0.38, 0.54, 0.66, 0.76, 0.88, 0.94, 0.98, 1.00]),
-    "industrial":     np.array([0.00, 0.32, 0.51, 0.64, 0.74, 0.86, 0.93, 0.97, 1.00]),
-    "infrastructure": np.array([0.00, 0.15, 0.30, 0.45, 0.55, 0.75, 0.90, 1.00, 1.00]),
-    "agriculture":    np.array([0.00, 0.18, 0.37, 0.53, 0.66, 0.85, 0.96, 1.00, 1.00]),
-}
+# --- depth-damage functions -----------------------------------------------
+# These are loaded from the published JRC database rather than written out
+# here.  An earlier version of this file carried a hand-entered table under a
+# "JRC Huizinga et al. (2017) Asia" heading whose values did not match the
+# published tables (residential read 0.58 at 1 m against the published 0.49,
+# and so on for every class except commerce), which over-predicted damage at
+# every depth while citing a source that said otherwise.  `damage.py` reads
+# `data/reference/jrc_flood_damage.json`, extracted from the source PDF with
+# its citation, so the numbers can be checked against the report.
+from . import damage as _damage                                   # noqa: E402
+
+DD_DEPTHS = np.array(_damage.curve("residential", "IND").depth_m)
+DD_CURVES = {c: _damage.curve(c, "IND").damage_factor
+             for c in _damage.ASSET_CLASSES}
 
 
 @dataclass
