@@ -1,0 +1,264 @@
+{
+  "run_id": "srisailam-6dfd44de",
+  "created_utc": "2026-09-19T11:30:10Z",
+  "scenario": {
+    "name": "srisailam",
+    "bbox_ll": [
+      78.7,
+      16.0,
+      79.2,
+      16.4
+    ],
+    "dam_name": "Srisailam",
+    "barrier_type": "engineered",
+    "failure_mode": "instantaneous",
+    "growth_law": "erosion",
+    "seed_method": "auto",
+    "loading": "0.75",
+    "res_m": 120.0,
+    "sim_hours": 3.0,
+    "n_frames": 36,
+    "breach_hours": 3.0,
+    "inflow_m3s": 0.0,
+    "manning_scale": 1.0,
+    "channel_burn_m": 0.0,
+    "run_sph": true,
+    "sph_dp": 4.0,
+    "sph_seconds": 20.0,
+    "sentinel1_window": null,
+    "validation_mode": "context",
+    "population_product": "1km",
+    "iso3": "IND",
+    "asset_values": {
+      "currency": "INR",
+      "residential_per_building": 1200000.0,
+      "commercial_per_building": 3500000.0,
+      "road_per_km": 25000000.0,
+      "cropland_per_hectare": 150000.0,
+      "_provenance": "USER-SUPPLIED ASSUMPTION - not measured data. Replace with audited schedule-of-rates for the study area."
+    }
+  },
+  "data_sources": {
+    "elevation": "Copernicus GLO-30 DSM (ESA/Airbus), AWS Open Data bucket copernicus-dem-30m",
+    "landcover": "ESA WorldCover v200 via MS Planetary Computer (ESA_WorldCover_10m_2021_v200_N15E078, ESA_WorldCover_10m_2020_v100_N15E078)",
+    "dam": [
+      "OpenStreetMap (ODbL)",
+      "Wikidata Q1552235 (CC0)",
+      "https://en.wikipedia.org/wiki/Srisailam%20Dam"
+    ],
+    "population": "WorldPop 2020 1km (IND), https://data.worldpop.org/GIS/Population/Global_2000_2020_1km/2020/IND/ind_ppp_2020_1km_Aggregated.tif",
+    "exposure": "OpenStreetMap via Overpass API (ODbL)",
+    "districts": "geoBoundaries gbOpen ADM2 (CC-BY 4.0)",
+    "sentinel1": {
+      "item_id": "S1A_IW_GRDH_1SDV_20240322T003939_20240322T004004_053087_066E0A_rtc",
+      "datetime": "2024-03-22T00:39:52.426961Z",
+      "platform": "SENTINEL-1A",
+      "collection": "sentinel-1-rtc via Microsoft Planetary Computer",
+      "otsu_threshold_db": -9.62
+    }
+  },
+  "qc": {
+    "dem": {
+      "source": "Copernicus GLO-30 DSM (ESA/Airbus), AWS Open Data bucket copernicus-dem-30m",
+      "cells": 168300,
+      "grid": [
+        374,
+        450
+      ],
+      "void_cells": 0,
+      "void_fraction": 0.0,
+      "z_min_m": 159.0,
+      "z_max_m": 903.94,
+      "relief_m": 744.94,
+      "cell_size_m": [
+        120.0,
+        120.0
+      ],
+      "crs": "EPSG:32644",
+      "projected_metres": true,
+      "max_slope_deg": 50.63,
+      "mean_slope_deg": 6.97,
+      "messages": [],
+      "pass": true
+    },
+    "conditioning": [
+      "void_fill",
+      "priority_flood_sink_fill"
+    ],
+    "reservoir": {
+      "dem_capacity_mcm": 213.8313167156242,
+      "dem_max_depth_m": 94.51232092285156,
+      "dem_surface_km2": 5.483670541639399,
+      "messages": [],
+      "pass": true,
+      "dem_is_surface_model": true,
+      "caveat": "Copernicus GLO-30 is a DSM: for an existing reservoir it records the water surface, so DEM-derived storage is a LOWER BOUND on gross capacity and the surface area is measured at crest level, not at FRL.",
+      "published_fields": {
+        "dam_type": "[[Gravity dam|Gravity]] & [[Masonry dam]]",
+        "dam_crosses": "[[Tungabhadra River]], [[Krishna River]]",
+        "dam_length": "{{Convert|512|m|ft|0|abbr=on}}",
+        "res_capacity_total": "{{convert|216|tmcft|lk=on}}",
+        "res_catchment": "{{Convert|206040|km2|abbr=on}}",
+        "res_surface": "{{Convert|616|km2|abbr=on}}",
+        "plant_capacity": "{{convert|1670|MW|abbr=on}}",
+        "dam_height": "{{Convert|145.10|m|ft|0|abbr=on}}<ref>{{cite web|title=India: National Register of Large Dams 2009|url=http://www.cwc.nic.in/main/downloads/National%20Register%20of%20Large%20Dams%202009.pdf|publisher"
+      },
+      "published_capacity_mcm": 216.0,
+      "capacity_ratio_dem_over_published": 0.99,
+      "published_surface_km2": 61.0,
+      "published_dam_height_m": 145.1
+    },
+    "breach": {
+      "mass_balance": {
+        "v_initial_mcm": 108.284,
+        "v_final_mcm": 0.089,
+        "released_mcm": 108.196,
+        "inflow_mcm": 0.0,
+        "closure_error_mcm": 0.0,
+        "relative_error": 0.0,
+        "pass": true
+      },
+      "peak_discharge_envelopes": {
+        "routed_peak_m3s": 317830.1,
+        "froehlich_1995_m3s": 28058.7,
+        "costa_schuster_1988_m3s": 7728.2,
+        "ratio_to_froehlich": 11.327,
+        "ratio_to_costa_schuster": 41.126,
+        "within_envelope": false,
+        "within_regression_calibration_range": true,
+        "reservoir_volume_mcm": 108.3,
+        "head_m": 70.9,
+        "pass": false,
+        "interpretation": "Routed peak disagrees with the envelopes INSIDE their calibration range - investigate the breach geometry."
+      },
+      "geometry": {
+        "final_top_width_m": 279.1,
+        "breach_height_m": 94.51,
+        "formation_time_min": 0.02,
+        "width_to_height": 2.95,
+        "pass": true
+      },
+      "drawdown": {
+        "h_initial_m": 238.48,
+        "h_final_m": 171.17,
+        "drawdown_m": 67.31,
+        "fraction_drained": 0.9992
+      }
+    },
+    "sph_balance": {
+      "sph_window_s": [
+        0.003,
+        18.615
+      ],
+      "sph_peak_m3s": 191939.9,
+      "sph_peak_at_s": 3.4,
+      "weir_peak_m3s": 317830.1,
+      "weir_t_peak_min": 0.02,
+      "peak_ratio_sph_over_weir": 0.604,
+      "breach_formation_time_min": 0.02,
+      "head_m": 70.88,
+      "critical_unit_discharge_m2s": 1017.3,
+      "sph_peak_unit_discharge_m2s": 687.7,
+      "ratio_to_critical_flow": 0.676,
+      "balance_pass": true,
+      "interpretation": "SPH near-field discharge is within the expected band around the critical-flow ceiling for this head.",
+      "note": "SPH models an instantaneous, fully-open breach and therefore peaks higher and far earlier than the weir closure, which grows the breach over its formation time. The two peaks are not expected to match; the critical-flow ratio is the meaningful gate."
+    },
+    "exposure": {
+      "inundation_touches_domain_edge": false,
+      "exposure_feature_counts": {
+        "settlements": 26,
+        "buildings": 1297,
+        "roads": 78,
+        "railways": 0,
+        "facilities": 18,
+        "bridges": 0,
+        "power": 4
+      },
+      "population_total_in_domain": 98767.0,
+      "population_exposed": 1139.0,
+      "buildings_exposed": 0,
+      "people_per_inundated_building": null,
+      "messages": [
+        "No settlement intersects the flood extent; check the bbox."
+      ],
+      "warnings": [
+        "1,139 people exposed but ZERO OSM buildings inundated: building footprints are unmapped here. Use the population figure, not the building count."
+      ],
+      "pass": false
+    },
+    "gates": {
+      "dem": true,
+      "reservoir": true,
+      "breach_mass_balance": true,
+      "breach_peak_envelope": false,
+      "breach_geometry": true,
+      "sph_balance": true,
+      "exposure": false
+    },
+    "failed_gates": [
+      "breach_peak_envelope",
+      "exposure"
+    ],
+    "overall_pass": false
+  },
+  "timings": {
+    "dem_s": 72.7,
+    "landcover_s": 20.1,
+    "sph_s": 3.1,
+    "swe_grid_standalone_s": 12.9,
+    "swe_coupled_s": 12.6,
+    "total_s": 218.6
+  },
+  "dam": {
+    "osm": {
+      "id": 135953153,
+      "name": "Srisailam Dam",
+      "crest_length_m": 1023.2,
+      "tags": {
+        "name": "Srisailam Dam",
+        "name:ml": "\u0d36\u0d4d\u0d30\u0d40\u0d36\u0d48\u0d32\u0d02 \u0d05\u0d23\u0d15\u0d4d\u0d15\u0d46\u0d1f\u0d4d\u0d1f\u0d4d",
+        "name:te": "\u0c36\u0c4d\u0c30\u0c40\u0c36\u0c48\u0c32\u0c02 \u0c06\u0c28\u0c15\u0c1f\u0c4d\u0c1f",
+        "waterway": "dam",
+        "wikidata": "Q1552235"
+      }
+    },
+    "center_ll": [
+      78.89695624444444,
+      16.086757244444446
+    ],
+    "sources": [
+      "OpenStreetMap (ODbL)",
+      "Wikidata Q1552235 (CC0)",
+      "https://en.wikipedia.org/wiki/Srisailam%20Dam"
+    ],
+    "wikidata": {
+      "qid": "Q1552235",
+      "label": "Srisailam Dam",
+      "description": "dam on Krishna river near SriSailam, Andhra Pradesh, India",
+      "sitelink": "Srisailam Dam",
+      "height_m": 145.0,
+      "length_m": 512.0,
+      "coordinate": [
+        78.897222222222,
+        16.086944444444
+      ],
+      "inception": "+1960-00-00T00:00:00Z",
+      "installed_capacity_W": 1670.0
+    },
+    "wikipedia": {
+      "title": "Srisailam Dam",
+      "fields": {
+        "dam_type": "[[Gravity dam|Gravity]] & [[Masonry dam]]",
+        "dam_crosses": "[[Tungabhadra River]], [[Krishna River]]",
+        "dam_length": "{{Convert|512|m|ft|0|abbr=on}}",
+        "res_capacity_total": "{{convert|216|tmcft|lk=on}}",
+        "res_catchment": "{{Convert|206040|km2|abbr=on}}",
+        "res_surface": "{{Convert|616|km2|abbr=on}}",
+        "plant_capacity": "{{convert|1670|MW|abbr=on}}",
+        "dam_height": "{{Convert|145.10|m|ft|0|abbr=on}}<ref>{{cite web|title=India: National Register of Large Dams 2009|url=http://www.cwc.nic.in/main/downloads/National%20Register%20of%20Large%20Dams%202009.pdf|publisher"
+      },
+      "source": "https://en.wikipedia.org/wiki/Srisailam%20Dam"
+    }
+  }
+}

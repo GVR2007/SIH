@@ -1,0 +1,7 @@
+name,place,osm_id,lon,lat,osm_population_tag,depth_m,velocity_ms,hazard_class,hazard_name,arrival_s,arrival_min
+Malla Uppu,village,342113107,78.4239238,30.4481152,,0.73,0.29,1,Low,8.1,0.1
+Chham (001),village,342114103,78.38333,30.51041,,5.5,0.07,4,Extreme,8.1,0.1
+Ramolgaon,village,342114127,78.34626,30.53513,,5.48,0.01,4,Extreme,8.1,0.1
+Nagni,hamlet,7880782293,78.3245909,30.588559,,5.44,0.0,4,Extreme,8.1,0.1
+(unnamed),hamlet,7874758213,78.4812534,30.3579621,,109.56,2.71,4,Extreme,1540.5,25.7
+Naramghat,village,342113257,78.4878184,30.3296351,,50.32,9.77,4,Extreme,3057.4,51.0

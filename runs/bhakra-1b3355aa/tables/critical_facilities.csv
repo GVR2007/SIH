@@ -1,0 +1,21 @@
+name,kind,osm_id,lon,lat,depth_m,hazard_class,hazard_name,arrival_min
+"Deep Nursing Home, Anandpur Sahib",clinic,7106432019,76.4954859,31.2314132,193.22,4,Extreme,164.9
+Mata Nanki Charitable Hospital,hospital,7103822710,76.5163651,31.2294021,190.54,4,Extreme,189.4
+Maa Nanki Charitable Hospital,hospital,857756631,76.5151287,31.2293832,190.27,4,Extreme,189.6
+Civil Hospital Anandpur Sahib,hospital,7150766804,76.4951861,31.2386474,189.43,4,Extreme,177.0
+Government Hospital Bhallan,hospital,7150766745,76.3768754,31.2726341,166.45,4,Extreme,95.9
+Primary Health Center,hospital,3047149065,76.322247,31.3566448,142.45,4,Extreme,71.6
+Government Hospital Kethera,hospital,7150766848,76.374109,31.36384,139.7,4,Extreme,57.5
+Shergill Healthcare Centre,clinic,6993508886,76.3361849,31.3710777,134.97,4,Extreme,65.2
+(unnamed),school,227054400,76.3613823,31.3820231,126.87,4,Extreme,51.8
+Gupta Healthcare Centre,clinic,7104053296,76.3404903,31.3834547,124.91,4,Extreme,64.1
+(unnamed),school,1155846980,76.3448913,31.386452,122.87,4,Extreme,62.0
+(unnamed),school,227054405,76.3532278,31.3908232,112.17,4,Extreme,60.3
+NFL Hospital,hospital,3047150396,76.3570696,31.3918174,109.03,4,Extreme,59.4
+NFL Hospital,hospital,1154998431,76.357134,31.3922089,109.03,4,Extreme,59.4
+Global Multispeciality Hospital,hospital,7637726861,76.3026168,31.431499,101.24,4,Extreme,356.6
+Anandraj Malik Hospital and Diagnostic Centre,hospital,6990475923,76.3398032,31.4135198,99.01,4,Extreme,326.4
+Ayurvedic Hospital,hospital,7637726872,76.3381151,31.4191459,94.66,4,Extreme,331.9
+Eshan Eye Hospital And Research Centre,hospital,6993302083,76.3414621,31.409586,94.35,4,Extreme,335.3
+Mount Carmel Senior Secondary School,school,6499712140,76.3049459,31.4619401,72.93,4,Extreme,391.3
+Dr. Satinder Chauhan Megacare Hospital,hospital,7637726839,76.3079095,31.4575594,72.67,4,Extreme,392.3

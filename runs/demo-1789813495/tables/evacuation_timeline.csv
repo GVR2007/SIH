@@ -1,0 +1,7 @@
+band,from_min,to_min,settlements,names,max_depth_m
+0-15 min,0,15,4,"['Malla Uppu', 'Chham (001)', 'Ramolgaon', 'Nagni']",5.5
+15-30 min,15,30,1,[],109.56
+30-60 min,30,60,1,['Naramghat'],50.32
+60-120 min,60,120,0,[],0.0
+120-240 min,120,240,0,[],0.0
+>240 min,240,,0,[],0.0

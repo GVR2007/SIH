@@ -1,0 +1,256 @@
+"""Flood hazard rating and depth-damage loss estimation.
+
+Implements the "Depth/Velocity -> Derive Hazard Variables -> Hazard rating ->
+Low/Moderate/Significant/Extreme -> Hazard raster + area/class ->
+Depth-damage curves -> damage class -> loss estimate" branch.
+
+Hazard rating follows the UK Defra / Environment Agency FD2320-FD2321 flood
+risk-to-people method, which is the formulation most widely reused in
+dam-break consequence studies:
+
+    HR = d * (v + 0.5) + DF
+
+  d  = depth (m), v = velocity (m/s), DF = debris factor (0, 0.5 or 1)
+
+    HR < 0.75         Low          "caution"
+    0.75 <= HR < 1.25 Moderate     "dangerous for some (children/elderly)"
+    1.25 <= HR < 2.5  Significant  "dangerous for most people"
+    HR >= 2.5         Extreme      "dangerous for all"
+
+Depth-damage curve *shapes* are the JRC global flood depth-damage functions for
+Asia (Huizinga, de Moel & Szewczyk, 2017, JRC Technical Report EUR 28552 EN).
+
+IMPORTANT ON MONETARY LOSS
+--------------------------
+The curves give a damage *fraction*.  Converting that to currency needs asset
+unit values, which are a policy/economic input, not something derivable from
+the DEM or satellite data.  They are therefore explicit, overridable scenario
+parameters and every monetary figure this module returns is tagged with the
+unit rates that produced it.  Physical exposure counts (buildings, people,
+road length, cropland area) come from real OSM/WorldPop data and carry no such
+assumption -- they are the primary output; currency is derived.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import Dict, List, Optional, Tuple
+
+import numpy as np
+
+# --- hazard classes --------------------------------------------------------
+HAZARD_CLASSES = [
+    (0.00, 0.75, "Low", "#2c7fb8", "Caution - shallow or slow-moving water"),
+    (0.75, 1.25, "Moderate", "#7fcdbb", "Dangerous for some (children, elderly)"),
+    (1.25, 2.50, "Significant", "#fdae61", "Dangerous for most people"),
+    (2.50, 1e9, "Extreme", "#d7191c", "Dangerous for all, including emergency services"),
+]
+
+# Debris factor by land cover (Defra FD2321 Table 3.2).
+# Higher where floating debris is likely to be generated.
+DEBRIS_FACTOR = {
+    "default": 0.5,
+    "built_up": 1.0,
+    "forest": 1.0,
+    "open": 0.0,
+}
+
+# --- JRC (Huizinga et al. 2017) Asia depth-damage functions ----------------
+DD_DEPTHS = np.array([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0])
+DD_CURVES = {
+    "residential":    np.array([0.00, 0.35, 0.58, 0.73, 0.84, 0.95, 0.99, 1.00, 1.00]),
+    "commercial":     np.array([0.00, 0.38, 0.54, 0.66, 0.76, 0.88, 0.94, 0.98, 1.00]),
+    "industrial":     np.array([0.00, 0.32, 0.51, 0.64, 0.74, 0.86, 0.93, 0.97, 1.00]),
+    "infrastructure": np.array([0.00, 0.15, 0.30, 0.45, 0.55, 0.75, 0.90, 1.00, 1.00]),
+    "agriculture":    np.array([0.00, 0.18, 0.37, 0.53, 0.66, 0.85, 0.96, 1.00, 1.00]),
+}
+
+
+@dataclass
+class AssetValues:
+    """Unit replacement values. EXPLICIT ASSUMPTIONS - override per study area.
+
+    Defaults are order-of-magnitude placeholders in Indian rupees and are
+    reported alongside every monetary result so a reviewer can substitute
+    audited CPWD / state PWD schedule-of-rates figures.
+    """
+    currency: str = "INR"
+    residential_per_building: float = 1_200_000.0
+    commercial_per_building: float = 3_500_000.0
+    road_per_km: float = 25_000_000.0
+    cropland_per_hectare: float = 150_000.0
+    source: str = ("USER-SUPPLIED ASSUMPTION - not measured data. "
+                   "Replace with audited schedule-of-rates for the study area.")
+
+    def to_dict(self) -> dict:
+        return {
+            "currency": self.currency,
+            "residential_per_building": self.residential_per_building,
+            "commercial_per_building": self.commercial_per_building,
+            "road_per_km": self.road_per_km,
+            "cropland_per_hectare": self.cropland_per_hectare,
+            "_provenance": self.source,
+        }
+
+
+# ---------------------------------------------------------------------------
+# Hazard rating
+# ---------------------------------------------------------------------------
+
+def debris_factor_map(landcover: Optional[np.ndarray],
+                      depth: np.ndarray) -> np.ndarray:
+    """Defra debris factor: depends on land cover AND depth."""
+    df = np.full(depth.shape, 0.5)
+    if landcover is not None:
+        built = landcover == 50
+        forest = landcover == 10
+        open_land = np.isin(landcover, (30, 40, 60, 70, 100))
+        df[open_land] = 0.0
+        df[built] = 1.0
+        df[forest] = 1.0
+        # below 0.25 m nothing significant floats
+        df[depth < 0.25] = 0.0
+    return df
+
+
+# The Defra risk-to-people curves were fitted for depths of order a few metres
+# and velocities of a few m/s -- the range in which a person can still stand.
+# A dam-break wave in a Himalayan gorge reaches tens of metres and tens of m/s,
+# where HR runs into the thousands and the number stops carrying meaning: every
+# cell is already "dangerous for all". The rating is therefore reported clipped,
+# with the raw maximum kept separately so nothing is silently hidden.
+HR_REPORTING_CAP = 20.0
+
+
+def hazard_rating(depth: np.ndarray, velocity: np.ndarray,
+                  landcover: Optional[np.ndarray] = None,
+                  debris: Optional[np.ndarray] = None,
+                  clip: Optional[float] = HR_REPORTING_CAP) -> np.ndarray:
+    """HR = d(v + 0.5) + DF  (Defra FD2321), clipped for reporting."""
+    df = debris if debris is not None else debris_factor_map(landcover, depth)
+    hr = depth * (velocity + 0.5) + df
+    hr = np.where(depth > 0.05, hr, 0.0)
+    if clip is not None:
+        hr = np.minimum(hr, clip)
+    return hr
+
+
+def classify(hr: np.ndarray) -> np.ndarray:
+    """Integer hazard class: 0 none, 1 Low, 2 Moderate, 3 Significant, 4 Extreme."""
+    cls = np.zeros(hr.shape, dtype=np.int8)
+    for idx, (lo, hi, *_rest) in enumerate(HAZARD_CLASSES, start=1):
+        cls[(hr >= lo) & (hr < hi)] = idx
+    cls[hr <= 0] = 0
+    return cls
+
+
+def class_areas(cls: np.ndarray, cell_area: float) -> List[dict]:
+    out = []
+    for idx, (lo, hi, name, colour, desc) in enumerate(HAZARD_CLASSES, start=1):
+        n = int((cls == idx).sum())
+        out.append({
+            "class": idx, "name": name, "colour": colour, "description": desc,
+            "hr_range": [lo, None if hi > 1e8 else hi],
+            "cells": n,
+            "area_km2": round(n * cell_area / 1e6, 4),
+        })
+    return out
+
+
+# ---------------------------------------------------------------------------
+# Depth-damage
+# ---------------------------------------------------------------------------
+
+def damage_fraction(depth: np.ndarray, curve: str = "residential") -> np.ndarray:
+    """Interpolate a JRC Asia depth-damage curve onto a depth field/array."""
+    if curve not in DD_CURVES:
+        raise ValueError(f"unknown damage curve {curve!r}; "
+                         f"available: {sorted(DD_CURVES)}")
+    return np.interp(depth, DD_DEPTHS, DD_CURVES[curve], left=0.0, right=1.0)
+
+
+def damage_class(frac: np.ndarray) -> np.ndarray:
+    """0 none, 1 minor (<25%), 2 moderate (<50%), 3 major (<75%), 4 destroyed."""
+    cls = np.zeros(frac.shape, dtype=np.int8)
+    cls[frac > 0.001] = 1
+    cls[frac >= 0.25] = 2
+    cls[frac >= 0.50] = 3
+    cls[frac >= 0.75] = 4
+    return cls
+
+
+DAMAGE_CLASS_NAMES = {0: "None", 1: "Minor", 2: "Moderate",
+                      3: "Major", 4: "Destroyed"}
+
+
+# ---------------------------------------------------------------------------
+# Combined product
+# ---------------------------------------------------------------------------
+
+@dataclass
+class HazardProduct:
+    hr: np.ndarray
+    hazard_class: np.ndarray
+    depth: np.ndarray
+    velocity: np.ndarray
+    dv: np.ndarray                     # depth x velocity, m2/s (structural proxy)
+    arrival_s: Optional[np.ndarray] = None
+    duration_s: Optional[np.ndarray] = None
+    summary: Dict[str, object] = field(default_factory=dict)
+
+
+def build_hazard(depth: np.ndarray, velocity: np.ndarray, cell_area: float,
+                 landcover: Optional[np.ndarray] = None,
+                 arrival_s: Optional[np.ndarray] = None,
+                 duration_s: Optional[np.ndarray] = None,
+                 wet_threshold: float = 0.05) -> HazardProduct:
+    hr = hazard_rating(depth, velocity, landcover)
+    hr_raw = hazard_rating(depth, velocity, landcover, clip=None)
+    cls = classify(hr)
+    dv = depth * velocity
+    wet = depth > wet_threshold
+
+    summary = {
+        "wet_threshold_m": wet_threshold,
+        "inundated_area_km2": round(float(wet.sum()) * cell_area / 1e6, 4),
+        "max_depth_m": round(float(depth.max()), 2),
+        "max_velocity_ms": round(float(velocity.max()), 2),
+        "max_dv_m2s": round(float(dv.max()), 2),
+        "max_hazard_rating_clipped": round(float(hr.max()), 2),
+        "max_hazard_rating_raw": round(float(hr_raw.max()), 1),
+        "hazard_rating_cap": HR_REPORTING_CAP,
+        "hazard_rating_note": (
+            "Defra FD2321 was calibrated for depths of a few metres and "
+            "velocities of a few m/s. Beyond class 4 ('dangerous for all') the "
+            "number carries no extra meaning, so it is clipped for reporting; "
+            "the raw maximum is given alongside."),
+        "mean_depth_where_wet_m": round(float(depth[wet].mean()), 3) if wet.any() else 0.0,
+        "classes": class_areas(cls, cell_area),
+        "method": "Defra FD2321 HR = d(v+0.5) + DF",
+    }
+    if arrival_s is not None:
+        arrived = arrival_s >= 0
+        if arrived.any():
+            summary["arrival_min"] = {
+                "earliest_min": round(float(arrival_s[arrived].min()) / 60, 2),
+                "median_min": round(float(np.median(arrival_s[arrived])) / 60, 2),
+                "latest_min": round(float(arrival_s[arrived].max()) / 60, 2),
+            }
+    return HazardProduct(hr=hr, hazard_class=cls, depth=depth, velocity=velocity,
+                         dv=dv, arrival_s=arrival_s, duration_s=duration_s,
+                         summary=summary)
+
+
+def structural_vulnerability(dv: np.ndarray) -> Dict[str, float]:
+    """Depth-velocity product thresholds for building stability.
+
+    Thresholds after Clausen & Clark (1990) / FEMA; d*v in m2/s:
+        < 3     inundation damage only
+        3 - 7   partial damage to masonry
+        > 7     total destruction of unreinforced masonry
+    """
+    return {
+        "dv_lt_3_m2s": int(((dv > 0) & (dv < 3)).sum()),
+        "dv_3_to_7_m2s": int(((dv >= 3) & (dv < 7)).sum()),
+        "dv_gt_7_m2s": int((dv >= 7).sum()),
+    }

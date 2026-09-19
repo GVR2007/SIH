@@ -1,0 +1,7 @@
+band,from_min,to_min,settlements,names,max_depth_m
+0-15 min,0,15,4,"['Malla Uppu', 'Chham (001)', 'Ramolgaon', 'Nagni']",12.14
+15-30 min,15,30,1,[],172.2
+30-60 min,30,60,1,['Naramghat'],143.11
+60-120 min,60,120,8,"['Chopra', 'danderi', 'Kyari', 'Koteshwar', 'pendars', 'nagar']",112.65
+120-240 min,120,240,8,"['Shanti Bazaar', 'Devprayag', 'Beech Bazaar', 'Bah Bazaar', 'Umrasu', 'Masniya Bani', 'ghanti', 'Byānsghāt']",120.96
+>240 min,240,,0,[],0.0

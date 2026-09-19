@@ -1,0 +1,1109 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width, initial-scale=1"/>
+<title>DamBurst - Dam Break Inundation Modelling Framework</title>
+<link rel="stylesheet" href="/static/vendor/leaflet.css"/>
+<style>
+:root{
+  --bg:#0b1016; --panel:#141a23; --panel2:#1b2430; --line:#2a3644;
+  --fg:#e9eff6; --dim:#93a3b5; --accent:#4aa8ff; --ok:#3fb950; --warn:#e3a53a; --bad:#f85149;
+  --c1:#2c7fb8; --c2:#7fcdbb; --c3:#fdae61; --c4:#d7191c;
+  --violet:#a78bfa; --teal:#2dd4bf; --amber:#fbbf24; --rose:#fb7185;
+}
+*{box-sizing:border-box}
+html,body{margin:0;height:100%;font:13px/1.5 ui-sans-serif,system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;background:var(--bg);color:var(--fg)}
+#app{display:grid;grid-template-columns:330px 1fr 400px;grid-template-rows:48px 1fr;height:100vh}
+header{grid-column:1/-1;display:flex;align-items:center;gap:14px;padding:0 14px;background:var(--panel);border-bottom:1px solid var(--line)}
+header h1{font-size:15px;margin:0;font-weight:650;letter-spacing:.2px}
+header .tag{font-size:11px;color:var(--dim);border:1px solid var(--line);padding:2px 7px;border-radius:99px}
+header .spacer{flex:1}
+aside,#right{background:var(--panel);overflow-y:auto;border-right:1px solid var(--line)}
+#right{border-right:none;border-left:1px solid var(--line)}
+#mapwrap{position:relative}
+#map{position:absolute;inset:0}
+.sec{border-bottom:1px solid var(--line);padding:12px 14px}
+.sec h2{font-size:11px;text-transform:uppercase;letter-spacing:.09em;color:var(--dim);margin:0 0 10px;
+  padding-left:8px;border-left:2px solid var(--accent)}
+label{display:block;font-size:11px;color:var(--dim);margin:8px 0 3px}
+select,input,button{width:100%;background:var(--panel2);color:var(--fg);border:1px solid var(--line);border-radius:6px;padding:6px 8px;font:inherit;font-size:12px}
+button{cursor:pointer;font-weight:600}
+button.primary{background:var(--accent);border-color:var(--accent);color:#04121f}
+button.primary:disabled{opacity:.5;cursor:not-allowed}
+button.ghost{background:transparent}
+.row{display:grid;grid-template-columns:1fr 1fr;gap:8px}
+.row3{display:grid;grid-template-columns:1fr 1fr 1fr;gap:6px}
+.bar{height:5px;background:var(--panel2);border-radius:99px;overflow:hidden;margin:9px 0 5px}
+.bar>i{display:block;height:100%;background:var(--accent);width:0;transition:width .3s}
+.log{max-height:150px;overflow-y:auto;font:11px/1.45 ui-monospace,SFMono-Regular,Menlo,monospace;color:var(--dim);background:#0b0f15;border:1px solid var(--line);border-radius:6px;padding:7px}
+.tabs{display:flex;gap:2px;padding:8px 10px 0;flex-wrap:wrap;border-bottom:1px solid var(--line)}
+.tabs button{width:auto;padding:5px 9px;font-size:11px;border-radius:6px 6px 0 0;border-bottom:none;background:transparent;color:var(--dim)}
+.tabs button.on{background:var(--panel2);color:var(--fg)}
+.tabpane{display:none;padding:12px 14px}
+.tabpane.on{display:block}
+table{width:100%;border-collapse:collapse;font-size:11.5px}
+th,td{text-align:left;padding:4px 6px;border-bottom:1px solid var(--line);vertical-align:top}
+th{color:var(--dim);font-weight:600;font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;
+  background:rgba(74,168,255,.06)}
+tbody tr:hover{background:rgba(74,168,255,.05)}
+td.n{color:#dce6f2}
+td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+.kpi{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px}
+.kpi div{background:linear-gradient(160deg,var(--panel2),rgba(27,36,48,.45));
+  border:1px solid var(--line);border-left:3px solid var(--accent);
+  border-radius:8px;padding:9px 11px}
+.kpi div:nth-child(1){border-left-color:var(--accent)}
+.kpi div:nth-child(2){border-left-color:var(--amber)}
+.kpi div:nth-child(3){border-left-color:var(--teal)}
+.kpi div:nth-child(4){border-left-color:var(--rose)}
+.kpi b{display:block;font-size:18px;font-weight:680;font-variant-numeric:tabular-nums;letter-spacing:-.01em}
+.kpi div:nth-child(1) b{color:#8ecbff}
+.kpi div:nth-child(2) b{color:var(--amber)}
+.kpi div:nth-child(3) b{color:var(--teal)}
+.kpi div:nth-child(4) b{color:var(--rose)}
+.kpi span{font-size:9.5px;color:var(--dim);text-transform:uppercase;letter-spacing:.06em}
+#view3d{position:absolute;inset:0;display:none;background:#0b0f15}
+#view3d canvas{display:block;width:100%;height:100%}
+.viewtoggle{position:absolute;top:14px;left:14px;z-index:600;display:flex;gap:2px;background:rgba(22,27,34,.94);border:1px solid var(--line);border-radius:8px;padding:4px}
+.viewtoggle button{width:auto;padding:4px 12px;font-size:11px;background:transparent;color:var(--dim);border:none}
+.viewtoggle button.on{background:var(--accent);color:#04121f;border-radius:5px}
+.ctl3d{position:absolute;top:60px;left:14px;z-index:600;display:none;background:rgba(22,27,34,.94);border:1px solid var(--line);border-radius:8px;padding:10px 12px;width:210px}
+.ctl3d label{display:flex;justify-content:space-between;align-items:center}
+.ctl3d input[type=range]{width:100%}
+.legend{position:absolute;bottom:14px;right:14px;z-index:500;background:rgba(22,27,34,.94);border:1px solid var(--line);border-radius:8px;padding:9px 11px;font-size:11px;min-width:150px}
+.legend i{display:inline-block;width:11px;height:11px;border-radius:2px;margin-right:6px;vertical-align:-1px}
+.timebar{position:absolute;left:14px;right:180px;bottom:14px;z-index:500;background:rgba(22,27,34,.94);border:1px solid var(--line);border-radius:8px;padding:8px 12px;display:flex;align-items:center;gap:10px}
+.timebar input[type=range]{flex:1}
+.timebar button{width:auto;padding:3px 10px}
+.timebar .t{font-variant-numeric:tabular-nums;font-size:12px;min-width:86px;text-align:right;color:var(--dim)}
+.layerctl{position:absolute;top:14px;right:14px;z-index:500;background:rgba(22,27,34,.94);border:1px solid var(--line);border-radius:8px;padding:8px;display:flex;flex-direction:column;gap:4px}
+.layerctl button{width:auto;padding:4px 10px;font-size:11px;background:transparent;color:var(--dim);text-align:left}
+.layerctl button.on{background:var(--accent);color:#04121f;border-color:var(--accent)}
+.pill{display:inline-block;font-size:10px;padding:1px 7px;border-radius:99px;border:1px solid var(--line);color:var(--dim)}
+.pill.ok{color:var(--ok);border-color:#1f5c2e}.pill.bad{color:var(--bad);border-color:#6e2b28}.pill.warn{color:var(--warn);border-color:#6b5217}
+.src{font-size:10.5px;color:var(--dim);line-height:1.5;word-break:break-word}
+.note{font-size:10.5px;color:var(--dim);background:var(--panel2);border-left:2px solid var(--accent);padding:7px 9px;border-radius:0 5px 5px 0;margin:8px 0}
+/* Chart canvases only. A bare `canvas` rule also hits the canvas Leaflet puts
+   in .leaflet-overlay-pane for preferCanvas vector layers, painting an opaque
+   dark sheet over the whole map -- tiles and image overlays vanish and only the
+   vectors drawn on that canvas stay visible. */
+#right canvas{width:100%;background:#0b0f15;border:1px solid var(--line);border-radius:6px}
+.leaflet-container canvas{background:transparent;border:0;border-radius:0;width:auto}
+a{color:var(--accent)}
+.hz1{color:var(--c1)}.hz2{color:var(--c2)}.hz3{color:var(--c3)}.hz4{color:var(--c4)}
+.tabs button.on{box-shadow:inset 0 -2px 0 var(--accent)}
+header h1{background:linear-gradient(92deg,#7cc4ff,#a78bfa);-webkit-background-clip:text;
+  background-clip:text;color:transparent}
+button.primary{background:linear-gradient(180deg,#5cb2ff,#3d93e6);box-shadow:0 1px 8px rgba(74,168,255,.25)}
+.bar>i{background:linear-gradient(90deg,var(--accent),var(--teal))}
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <h1>DamBurst</h1>
+    <span class="tag">Dam Break Inundation Modelling &middot; SPH + 2D Hydrodynamics</span>
+    <span class="tag" id="engine">engine: ?</span>
+    <div class="spacer"></div>
+    <span class="tag" id="runtag">no run loaded</span>
+  </header>
+
+  <!-- ---------------- controls ---------------- -->
+  <aside>
+    <div class="sec">
+      <h2>Study area</h2>
+      <label>Dam / barrier preset</label>
+      <select id="preset"></select>
+      <div id="presetnote" class="src" style="margin-top:8px"></div>
+    </div>
+
+    <div class="sec">
+      <h2>Scenario</h2>
+      <label>Barrier type</label>
+      <select id="barrier_type">
+        <option value="engineered">Engineered dam</option>
+        <option value="natural">Natural / landslide blockage</option>
+      </select>
+      <label>Failure mode</label>
+      <select id="failure_mode">
+        <option value="overtopping">Overtopping</option>
+        <option value="piping">Piping</option>
+        <option value="progressive_erosion">Progressive erosion</option>
+        <option value="instantaneous">Instantaneous</option>
+      </select>
+      <div class="row">
+        <div><label>Growth law</label>
+          <select id="growth_law">
+            <option value="sine">Sine</option><option value="linear">Linear</option>
+            <option value="erosion">Erosion (t^0.5)</option>
+          </select></div>
+        <div><label>Loading level</label>
+          <select id="loading">
+            <option value="FRL">Full (FRL)</option>
+            <option value="0.9">90% depth</option>
+            <option value="0.75">75% depth</option>
+          </select></div>
+      </div>
+    </div>
+
+    <div class="sec">
+      <h2>Numerics</h2>
+      <div class="row">
+        <div><label>Grid (m)</label>
+          <select id="res_m"><option>180</option><option selected>120</option><option>90</option><option>60</option></select></div>
+        <div><label>Sim (hours)</label>
+          <select id="sim_hours"><option>1</option><option selected>3</option><option>6</option><option>10</option></select></div>
+      </div>
+      <div class="row">
+        <div><label>SPH near field</label>
+          <select id="run_sph"><option value="true" selected>On</option><option value="false">Off</option></select></div>
+        <div><label>SPH dp (m)</label>
+          <select id="sph_dp"><option>5</option><option selected>4</option><option>3</option><option>2.5</option></select></div>
+      </div>
+      <label>Sentinel-1 use</label>
+      <select id="validation_mode">
+        <option value="context">Context - pre-event water baseline</option>
+        <option value="benchmark">Benchmark - score vs observed flood</option>
+      </select>
+    </div>
+
+    <div class="sec">
+      <h2>Execute</h2>
+      <button class="primary" id="run">Run simulation</button>
+      <div class="bar"><i id="pbar"></i></div>
+      <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--dim)">
+        <span id="pstage">idle</span><span id="ppct"></span>
+      </div>
+      <div class="log" id="log" style="margin-top:8px">Ready.</div>
+      <label style="margin-top:10px">Previous runs</label>
+      <select id="runs"></select>
+      <button class="ghost" id="loadrun" style="margin-top:6px">Load selected run</button>
+    </div>
+  </aside>
+
+  <!-- ---------------- map ---------------- -->
+  <div id="mapwrap">
+    <div id="map"></div>
+    <div id="view3d"></div>
+    <div class="viewtoggle">
+      <button id="btn2d" class="on">2D map</button>
+      <button id="btn3d">3D terrain</button>
+    </div>
+    <div class="ctl3d" id="ctl3d">
+      <label>Vertical exaggeration <b id="vexLabel">2.0&times;</b></label>
+      <input type="range" id="vex" min="1" max="6" step="0.5" value="2"/>
+      <label>Surface <b id="surfLabel">Depth</b></label>
+      <select id="surfmode">
+        <option value="depth">Water depth</option>
+        <option value="hazard">Hazard class</option>
+      </select>
+      <div style="display:flex;gap:6px;margin-top:8px">
+        <button id="fitview" class="ghost" style="font-size:11px;padding:4px 8px">Fit view</button>
+        <button id="gotodam" class="ghost" style="font-size:11px;padding:4px 8px">Go to dam</button>
+      </div>
+      <div class="src" id="stat3d" style="margin-top:8px"></div>
+    </div>
+    <div class="layerctl" id="layerctl"></div>
+    <div class="legend" id="legend"></div>
+    <div class="timebar" id="timebar" style="display:none">
+      <button id="play">Play</button>
+      <input type="range" id="tslider" min="0" max="0" value="0"/>
+      <span class="t" id="tlabel">--</span>
+    </div>
+  </div>
+
+  <!-- ---------------- results ---------------- -->
+  <div id="right">
+    <div class="tabs" id="tabs">
+      <button data-t="impact" class="on">Impact</button>
+      <button data-t="models">Models</button>
+      <button data-t="hydro">Hydrographs</button>
+      <button data-t="evac">Evacuation</button>
+      <button data-t="valid">Validation</button>
+      <button data-t="prov">Data &amp; QC</button>
+      <button data-t="export">Export</button>
+    </div>
+    <div class="tabpane on" id="tab-impact"></div>
+    <div class="tabpane" id="tab-models"></div>
+    <div class="tabpane" id="tab-hydro"></div>
+    <div class="tabpane" id="tab-evac"></div>
+    <div class="tabpane" id="tab-valid"></div>
+    <div class="tabpane" id="tab-prov"></div>
+    <div class="tabpane" id="tab-export"></div>
+  </div>
+</div>
+
+<script src="/static/vendor/leaflet.js"></script>
+<script src="/static/vendor/three.min.js"></script>
+<script src="/static/vendor/OrbitControls.js"></script>
+<script>
+const $ = s => document.querySelector(s);
+const fmt = (v,d=2) => (v===null||v===undefined||Number.isNaN(v)) ? "&ndash;"
+  : (typeof v === "number" ? v.toLocaleString(undefined,{maximumFractionDigits:d}) : v);
+const esc = s => String(s??"").replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+
+let map, baseLayer, hillLayer, overlays={}, current=null, runId=null, frames=[], frameIdx=0, playing=null, damLayer=null;
+
+// ---------------------------------------------------------------- map
+function initMap(){
+  map = L.map('map',{zoomControl:true, preferCanvas:true}).setView([30.37,78.48],10);
+  // OSM tiles are a nice-to-have, not a dependency: with no internet, or in a
+  // sandboxed browser that refuses third-party requests, they never arrive and
+  // the map goes black. The DEM hillshade below is the real basemap.
+  baseLayer = L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png',{
+    maxZoom:17, opacity:0.55, attribution:'&copy; OpenStreetMap contributors'});
+  baseLayer.addTo(map);
+  L.control.scale({imperial:false}).addTo(map);
+  // The dashboard lives in a resizable pane; without this the map keeps using
+  // a stale container size and every later fitBounds is wrong again.
+  if(window.ResizeObserver){
+    new ResizeObserver(() => map.invalidateSize({animate:false}))
+      .observe(document.getElementById('map'));
+  }
+  window.addEventListener('resize', () => map.invalidateSize({animate:false}));
+}
+
+function setHillshade(ex){
+  if(hillLayer){ map.removeLayer(hillLayer); hillLayer=null; }
+  const hs = (ex.overlays||{}).basemap;
+  if(!hs) return;
+  hillLayer = L.imageOverlay(`/api/runs/${runId}/file/overlays/${hs.file}`,
+                             hs.bounds_ll, {opacity:1, zIndex:1}).addTo(map);
+}
+
+const LAYERS = [
+  {k:'depth',    label:'Max depth',    file:'depth'},
+  {k:'velocity', label:'Max velocity', file:'velocity'},
+  {k:'hazard',   label:'Hazard rating',file:'hazard'},
+  {k:'arrival',  label:'Arrival time', file:'arrival'},
+  {k:'anim',     label:'Time animation', file:null},
+];
+let activeLayer='depth';
+
+function buildLayerCtl(){
+  const el=$('#layerctl'); el.innerHTML='';
+  LAYERS.forEach(L0=>{
+    const b=document.createElement('button');
+    b.textContent=L0.label; b.className = L0.k===activeLayer?'on':'';
+    b.onclick=()=>{ activeLayer=L0.k; showLayer(); buildLayerCtl(); };
+    el.appendChild(b);
+  });
+}
+
+function clearOverlays(){
+  Object.values(overlays).forEach(o=>{ if(map.hasLayer(o)) map.removeLayer(o); });
+  overlays={};
+}
+
+function showLayer(){
+  if(!current) return;
+  clearOverlays();
+  stopPlay();
+  const ex = current.exports||{};
+  $('#timebar').style.display = (activeLayer==='anim')?'flex':'none';
+
+  if(activeLayer==='anim'){
+    const fm = ex.frames||{};
+    if(!fm.count){ $('#timebar').style.display='none'; return; }
+    frames = fm.files.map(f=>`/api/runs/${runId}/file/overlays/${f}`);
+    $('#tslider').max = fm.count-1; frameIdx=0;
+    setFrame(0);
+    legendFor('depth', fm.vmax||5);
+    return;
+  }
+  const o = (ex.overlays||{})[activeLayer];
+  if(!o) return;
+  const url = `/api/runs/${runId}/file/overlays/${o.file}`;
+  overlays[activeLayer] = L.imageOverlay(url, o.bounds_ll, {opacity:.92, zIndex:5}).addTo(map);
+  legendFor(activeLayer, o.vmax);
+}
+
+function setFrame(i){
+  const fm=(current.exports||{}).frames||{};
+  if(!frames.length) return;
+  frameIdx = Math.max(0, Math.min(i, frames.length-1));
+  clearOverlays();
+  overlays.anim = L.imageOverlay(frames[frameIdx], fm.bounds_ll, {opacity:.92, zIndex:5}).addTo(map);
+  $('#tslider').value = frameIdx;
+  const t = (fm.times_s||[])[frameIdx]||0;
+  $('#tlabel').textContent = `${(t/60).toFixed(1)} min`;
+}
+function stopPlay(){ if(playing){clearInterval(playing); playing=null; $('#play').textContent='Play';} }
+$('#play')?.addEventListener('click',()=>{
+  if(playing){stopPlay(); return;}
+  $('#play').textContent='Pause';
+  playing=setInterval(()=>{
+    if(T3.on){ const n=T3.frames.length||1; setFrame3D((T3.frame+1)%n); }
+    else setFrame((frameIdx+1)%frames.length);
+  }, 320);
+});
+$('#tslider')?.addEventListener('input',e=>{
+  stopPlay();
+  // One slider, two renderers: whichever view is on screen owns it.
+  if(T3.on) setFrame3D(+e.target.value); else setFrame(+e.target.value);
+});
+
+const RAMPS={
+  depth:[['#dee bef','0'],],
+};
+function legendFor(kind, vmax){
+  const el=$('#legend');
+  if(kind==='hazard'){
+    el.innerHTML = `<b style="font-size:11px">Hazard rating (Defra FD2321)</b><br/>
+      <i style="background:#2c7fb8"></i>Low &lt;0.75<br/>
+      <i style="background:#7fcdbb"></i>Moderate 0.75&ndash;1.25<br/>
+      <i style="background:#fdae61"></i>Significant 1.25&ndash;2.5<br/>
+      <i style="background:#d7191c"></i>Extreme &ge;2.5`;
+    return;
+  }
+  const units={depth:'m',velocity:'m/s',arrival:'min',anim:'m'}[kind]||'';
+  const title={depth:'Max depth',velocity:'Max velocity',arrival:'Arrival time',anim:'Depth'}[kind]||kind;
+  const ramp = kind==='arrival' ? ['#d7191c','#fdae61','#ffffbf','#abd9e9','#2c7bb6']
+             : kind==='velocity'? ['#ffffcc','#a1dab4','#41b6c4','#225ea8','#0c2c84']
+             : ['#deebf7','#9ecae1','#4292c6','#08519c','#04235c'];
+  el.innerHTML = `<b style="font-size:11px">${title} (${units})</b>
+    <div style="height:9px;margin:6px 0;border-radius:3px;background:linear-gradient(90deg,${ramp.join(',')})"></div>
+    <div style="display:flex;justify-content:space-between;color:var(--dim)"><span>0</span><span>${fmt(vmax,1)}</span></div>`;
+}
+
+// ---------------------------------------------------------------- run
+async function loadPresets(){
+  const j = await (await fetch('/api/presets')).json();
+  const sel=$('#preset'); sel.innerHTML='';
+  j.presets.forEach(p=>{
+    const o=document.createElement('option'); o.value=p.key; o.textContent=p.title; sel.appendChild(o);
+  });
+  sel.onchange=()=>{
+    const p=j.presets.find(x=>x.key===sel.value);
+    $('#presetnote').innerHTML = `<b>${esc(p.river)}</b>, ${esc(p.state)}<br/>${esc(p.note)}
+      <br/><span style="color:var(--dim)">Downstream: ${esc((p.downstream_towns||[]).join(', '))}</span>`;
+    $('#barrier_type').value = p.barrier_type;
+  };
+  sel.onchange();
+}
+
+$('#run').onclick = async () => {
+  const body = {
+    preset: $('#preset').value,
+    barrier_type: $('#barrier_type').value,
+    failure_mode: $('#failure_mode').value,
+    growth_law: $('#growth_law').value,
+    loading: $('#loading').value,
+    res_m: parseFloat($('#res_m').value),
+    sim_hours: parseFloat($('#sim_hours').value),
+    breach_hours: parseFloat($('#sim_hours').value),
+    run_sph: $('#run_sph').value==='true',
+    sph_dp: parseFloat($('#sph_dp').value),
+    validation_mode: $('#validation_mode').value,
+  };
+  $('#run').disabled=true; $('#log').textContent='Submitting...';
+  try{
+    const r = await (await fetch('/api/run',{method:'POST',headers:{'Content-Type':'application/json'},
+                                             body:JSON.stringify(body)})).json();
+    if(r.detail){ throw new Error(r.detail); }
+    poll(r.run_id);
+  }catch(e){ $('#log').textContent='Error: '+e.message; $('#run').disabled=false; }
+};
+
+function poll(id){
+  const tick = async () => {
+    let s;
+    try{ s = await (await fetch(`/api/runs/${id}/status`)).json(); }
+    catch(e){ setTimeout(tick,1500); return; }
+    $('#pbar').style.width = (s.pct||0)+'%';
+    $('#pstage').textContent = s.stage||'';
+    $('#ppct').textContent = (s.pct!=null? s.pct+'%':'');
+    if(s.log) $('#log').innerHTML = s.log.slice(-40).map(l=>
+      `<div>[${l.t}s] <b>${esc(l.stage)}</b> ${esc(l.message)}</div>`).join('');
+    $('#log').scrollTop = 1e9;
+    if(s.state==='done'){ $('#run').disabled=false; loadRun(id); refreshRuns(); return; }
+    if(s.state==='error'){ $('#run').disabled=false;
+      $('#log').innerHTML += `<div style="color:var(--bad)">${esc(s.message)}</div>`; return; }
+    setTimeout(tick,1200);
+  };
+  tick();
+}
+
+async function refreshRuns(){
+  let j;
+  try{ j = await (await fetch('/api/runs')).json(); }catch(e){ return []; }
+  const done = j.runs.filter(r=>r.state==='done');
+  const sel=$('#runs');
+  const keep = sel.value;
+  // Only rebuild when the set actually changed, so we don't stomp the user's
+  // selection on every poll.
+  const ids = done.map(r=>r.run_id).join(',');
+  if(sel.dataset.ids !== ids){
+    sel.innerHTML='';
+    done.forEach(r=>{
+      const o=document.createElement('option'); o.value=r.run_id; o.textContent=r.run_id; sel.appendChild(o);
+    });
+    sel.dataset.ids = ids;
+    if(keep && done.some(r=>r.run_id===keep)) sel.value = keep;
+  }
+  return done;
+}
+$('#loadrun').onclick = () => { if($('#runs').value) loadRun($('#runs').value); };
+
+// Leaflet derives the fit zoom from the container's MEASURED size. Calling
+// invalidateSize() immediately is not enough when the map is built before its
+// pane has been laid out: the container still reports 0, getBoundsZoom()
+// silently falls back to maxZoom, and the overlay is magnified ~100x -- a few
+// source pixels stretched across the viewport, which reads as a black sheet
+// covering the map. So wait for a real measurement, then fit.
+function fitWhenReady(bounds, tries = 60){
+  const el = document.getElementById('map');
+  const step = () => {
+    if((el.clientWidth > 50 && el.clientHeight > 50) || tries-- <= 0){
+      map.invalidateSize({animate:false});
+      map.fitBounds(bounds, {padding:[20,20], maxZoom:14});
+    } else {
+      requestAnimationFrame(step);
+    }
+  };
+  requestAnimationFrame(step);
+}
+
+async function loadRun(id){
+  runId=id;
+  const res = await (await fetch(`/api/runs/${id}/results`)).json();
+  const man = await (await fetch(`/api/runs/${id}/manifest`)).json();
+  current=res; current._manifest=man;
+  $('#runtag').textContent = id;
+  setHillshade(res.exports||{});
+  // Fit to the wetted area when we have it: the model domain is sized for the
+  // catchment, so fitting that leaves the flood as an unreadable hairline.
+  const fb = res.map.flood_bounds_ll;
+  const bb = res.map.bbox_ll;
+  // invalidateSize() FIRST. Leaflet derives the fit zoom from the container's
+  // measured size, and if it reads 0 -- which it does whenever the map was
+  // created before its pane had been laid out -- getBoundsZoom() silently
+  // returns maxZoom. The result is a ~100x magnified overlay: a handful of
+  // source pixels stretched over the viewport, which looks like a solid black
+  // sheet covering the map. maxZoom below is the belt-and-braces guard.
+  fitWhenReady(fb ? fb : [[bb[1],bb[0]],[bb[3],bb[2]]]);
+  if(damLayer) map.removeLayer(damLayer);
+  damLayer = L.polyline(res.map.dam.geometry_ll.map(c=>[c[1],c[0]]),
+                        {color:'#f85149',weight:4}).addTo(map)
+             .bindPopup(`<b>${esc(res.map.dam.name)}</b>`);
+  buildLayerCtl();
+  if(T3.on){ T3.data=null; setView(true); } else showLayer();
+  renderImpact(res); renderModels(res); renderHydro(res);
+  renderEvac(res); renderValid(res); renderProv(res,man); renderExport(res,id);
+}
+
+// ---------------------------------------------------------------- panels
+function renderImpact(r){
+  const im=r.impact||{}, hz=r.hazard||{}, pop=im.population||{};
+  const cls=(hz.classes||[]);
+  $('#tab-impact').innerHTML = `
+    <div class="kpi">
+      <div><span>Inundated area</span><b>${fmt(hz.inundated_area_km2,1)} km&sup2;</b></div>
+      <div><span>Population exposed</span><b>${fmt(pop.total_exposed,0)}</b></div>
+      <div><span>Max depth</span><b>${fmt(hz.max_depth_m,1)} m</b></div>
+      <div><span>Max velocity</span><b>${fmt(hz.max_velocity_ms,1)} m/s</b></div>
+    </div>
+    <h2 style="font-size:11px;color:var(--dim);text-transform:uppercase">Hazard classes</h2>
+    <table><thead><tr><th>Class</th><th class="n">Area km&sup2;</th><th class="n">Population</th></tr></thead><tbody>
+    ${cls.map((c,i)=>`<tr><td><span class="hz${c.class}">&#9632;</span> ${esc(c.name)}</td>
+      <td class="n">${fmt(c.area_km2,2)}</td>
+      <td class="n">${fmt((pop.by_class||[])[i]?.population,0)}</td></tr>`).join('')}
+    </tbody></table>
+
+    <h2 style="font-size:11px;color:var(--dim);text-transform:uppercase;margin-top:14px">Buildings (OpenStreetMap)</h2>
+    <table><tbody>
+      <tr><td>Mapped in domain</td><td class="n">${fmt(im.buildings?.total_in_domain,0)}</td></tr>
+      <tr><td>Inundated</td><td class="n">${fmt(im.buildings?.exposed,0)}</td></tr>
+      <tr><td>Mean damage fraction</td><td class="n">${fmt(im.buildings?.mean_damage_fraction,3)}</td></tr>
+      <tr><td>d&middot;v &gt; 7 m&sup2;/s (total destruction)</td><td class="n">${fmt(im.buildings?.structural_dv?.dv_gt_7_total_destruction,0)}</td></tr>
+    </tbody></table>
+
+    <h2 style="font-size:11px;color:var(--dim);text-transform:uppercase;margin-top:14px">Lifelines</h2>
+    <table><tbody>
+      <tr><td>Road/rail inundated</td><td class="n">${fmt(im.roads?.total_inundated_km,2)} km</td></tr>
+      <tr><td>Critical facilities hit</td><td class="n">${fmt((im.facilities||[]).length,0)}</td></tr>
+      <tr><td>Settlements affected</td><td class="n">${fmt((im.settlements||[]).length,0)}</td></tr>
+      <tr><td>Cropland inundated</td><td class="n">${fmt(im.landcover?.Cropland?.area_ha,1)} ha</td></tr>
+    </tbody></table>
+
+    ${(im.districts||[]).length?`<h2 style="font-size:11px;color:var(--dim);text-transform:uppercase;margin-top:14px">District breakdown</h2>
+    <table><thead><tr><th>District</th><th class="n">km&sup2;</th><th class="n">Pop.</th></tr></thead><tbody>
+    ${im.districts.slice(0,10).map(d=>`<tr><td>${esc(d.district)}</td><td class="n">${fmt(d.inundated_km2,2)}</td>
+      <td class="n">${fmt(d.population_exposed,0)}</td></tr>`).join('')}</tbody></table>`:''}
+
+    <h2 style="font-size:11px;color:var(--dim);text-transform:uppercase;margin-top:14px">Indicative loss</h2>
+    <table><tbody>
+      <tr><td>Buildings</td><td class="n">&#8377; ${fmt((im.losses?.buildings||0)/1e7,2)} cr</td></tr>
+      <tr><td>Roads</td><td class="n">&#8377; ${fmt((im.losses?.roads||0)/1e7,2)} cr</td></tr>
+      <tr><td>Cropland</td><td class="n">&#8377; ${fmt((im.losses?.cropland||0)/1e7,2)} cr</td></tr>
+      <tr><td><b>Total</b></td><td class="n"><b>&#8377; ${fmt(im.losses?.total_crore,2)} cr</b></td></tr>
+    </tbody></table>
+    <div class="note">${esc(im.losses?.caveat||'')}</div>`;
+}
+
+function renderModels(r){
+  const rows=r.model_comparison||[];
+  $('#tab-models').innerHTML = `
+    <div class="note">Primary model used for hazard and impact: <b>${esc(r.primary_model||'')}</b></div>
+    <table><thead><tr><th>Model</th><th class="n">Peak Q<br/>m&sup3;/s</th><th class="n">Area<br/>km&sup2;</th>
+      <th class="n">Max d<br/>m</th><th class="n">Max v<br/>m/s</th><th class="n">CPU<br/>s</th></tr></thead><tbody>
+    ${rows.map(m=>`<tr><td><b>${esc(m.model)}</b><br/><span class="src">${esc(m.description)}</span>
+      <br/><span class="src">${esc(m.cells_or_particles||'')}</span></td>
+      <td class="n">${fmt(m.peak_inflow_m3s,0)}</td><td class="n">${fmt(m.inundated_km2,2)}</td>
+      <td class="n">${fmt(m.max_depth_m,1)}</td><td class="n">${fmt(m.max_velocity_ms,1)}</td>
+      <td class="n">${fmt(m.wallclock_s,1)}</td></tr>`).join('')}
+    </tbody></table>
+    ${r.sph_vs_weir?`<h2 style="font-size:11px;color:var(--dim);text-transform:uppercase;margin-top:14px">SPH &harr; weir balance check</h2>
+    <table><tbody>
+      <tr><td>SPH peak / weir peak</td><td class="n">${fmt(r.sph_vs_weir.peak_ratio_sph_over_weir,3)}</td></tr>
+      <tr><td>Volume ratio</td><td class="n">${fmt(r.sph_vs_weir.volume_ratio,3)}</td></tr>
+      <tr><td>NSE (SPH vs weir)</td><td class="n">${fmt(r.sph_vs_weir.nse_sph_vs_weir,3)}</td></tr>
+      <tr><td>Balance gate</td><td class="n">${r.sph_vs_weir.balance_pass?'<span class="pill ok">pass</span>':'<span class="pill bad">fail</span>'}</td></tr>
+    </tbody></table><div class="note">${esc(r.sph_vs_weir.note||'')}</div>`:''}
+    ${r.transfer_interface?`<h2 style="font-size:11px;color:var(--dim);text-transform:uppercase;margin-top:14px">Transfer interface</h2>
+    <table><tbody>
+      <tr><td>Transfer section</td><td class="n">x = ${fmt(r.transfer_interface.transfer_x_m,1)} m</td></tr>
+      <tr><td>Overlap zone</td><td class="n">${(r.transfer_interface.overlap_zone_m||[]).map(v=>fmt(v,0)).join(' &ndash; ')} m</td></tr>
+      <tr><td>Effective width</td><td class="n">${fmt(r.transfer_interface.effective_width_m,1)} m</td></tr>
+      <tr><td>Peak Q across section</td><td class="n">${fmt(r.transfer_interface.peak_q_total_m3s,0)} m&sup3;/s</td></tr>
+    </tbody></table>`:''}
+    ${r.sph_error?`<div class="note" style="border-color:var(--bad)">SPH: ${esc(r.sph_error)}</div>`:''}`;
+}
+
+// The reservoir derivation is a provenance OBJECT (method, sources, caveats),
+// not a string -- interpolating it directly printed "[object Object]" and threw
+// away exactly the information a reviewer needs to judge the storage estimate.
+function derivationHtml(d){
+  if(!d) return '';
+  if(typeof d === 'string') return `<div class="note">${esc(d)}</div>`;
+  const label = k => k.replace(/_/g,' ').replace(/\b\w/g, c=>c.toUpperCase());
+  const skip = new Set(['method','caveat','warning','coefficient_a']);
+  const rows = Object.entries(d).filter(([k,v])=>!skip.has(k) && v!==null && v!==undefined)
+    .map(([k,v])=>`<tr><td>${esc(label(k))}</td><td class="n">${esc(
+      typeof v==='number' ? v.toLocaleString(undefined,{maximumFractionDigits:3}) : v)}</td></tr>`).join('');
+  return `${d.method?`<div class="note"><b>Method:</b> ${esc(d.method)}</div>`:''}
+    ${rows?`<table><tbody>${rows}</tbody></table>`:''}
+    ${d.warning?`<div class="note" style="border-color:var(--bad)">${esc(d.warning)}</div>`:''}
+    ${d.caveat?`<div class="note" style="border-color:var(--warn)">${esc(d.caveat)}</div>`:''}`;
+}
+
+function renderHydro(r){
+  const b=r.breach||{}, res=r.reservoir||{};
+  $('#tab-hydro').innerHTML = `
+    <div class="kpi">
+      <div><span>Peak outflow</span><b>${fmt(b.peak_q_m3s,0)}</b></div>
+      <div><span>Time to peak</span><b>${fmt(b.t_peak_min,1)} min</b></div>
+      <div><span>Volume released</span><b>${fmt(b.released_mcm,1)} MCM</b></div>
+      <div><span>Breach width</span><b>${fmt(b.final_top_width_m,0)} m</b></div>
+    </div>
+    <canvas id="chart1" height="150"></canvas>
+    <div class="src" style="margin:6px 0 14px">Breach outflow Q(t) and reservoir level, from DEM-derived H&ndash;V&ndash;A routing.</div>
+    ${r.hydrographs?.sph_transfer?`<canvas id="chart2" height="130"></canvas>
+      <div class="src" style="margin-top:6px">SPH transfer section: unit discharge q(t).</div>`:''}
+    <h2 style="font-size:11px;color:var(--dim);text-transform:uppercase;margin-top:14px">Reservoir (DEM hypsometry)</h2>
+    <table><tbody>
+      <tr><td>Crest / initial level</td><td class="n">${fmt(res.crest_m,1)} m</td></tr>
+      <tr><td>Bed</td><td class="n">${fmt(res.bed_m,1)} m</td></tr>
+      <tr><td>Max depth</td><td class="n">${fmt(res.max_depth_m,1)} m</td></tr>
+      <tr><td>Capacity at crest</td><td class="n">${fmt(res.capacity_mcm,1)} MCM</td></tr>
+      <tr><td>Surface at crest</td><td class="n">${fmt(res.area_at_crest_km2,2)} km&sup2;</td></tr>
+      <tr><td>Initial storage</td><td class="n">${fmt(res.initial_storage_mcm,1)} MCM</td></tr>
+    </tbody></table>
+    ${derivationHtml(res.derivation)}`;
+  const h=r.hydrographs?.breach;
+  if(h) lineChart('chart1', h.t_s.map(t=>t/60), [
+    {y:h.q_m3s, color:'#4aa8ff', label:'Q (m³/s)'},
+    {y:h.level_m, color:'#3fb950', label:'Level (m)', axis:2}], 'minutes');
+  const s=r.hydrographs?.sph_transfer;
+  if(s) lineChart('chart2', s.t_s, [{y:s.q_unit_m2s,color:'#d29922',label:'q (m²/s)'}], 'seconds');
+}
+
+function lineChart(id, xs, series, xlabel){
+  const c=document.getElementById(id); if(!c) return;
+  const dpr=window.devicePixelRatio||1;
+  const W=c.clientWidth, H=c.height;
+  c.width=W*dpr; c.height=H*dpr;
+  const g=c.getContext('2d'); g.scale(dpr,dpr);
+  g.clearRect(0,0,W,H);
+  const pad={l:44,r:44,t:12,b:24};
+  const xmin=Math.min(...xs), xmax=Math.max(...xs);
+  const X=v=>pad.l+(v-xmin)/((xmax-xmin)||1)*(W-pad.l-pad.r);
+  g.strokeStyle='#2b3444'; g.lineWidth=1;
+  g.beginPath(); g.moveTo(pad.l,H-pad.b); g.lineTo(W-pad.r,H-pad.b); g.stroke();
+  series.forEach((s)=>{
+    const ymin=0, ymax=Math.max(...s.y)*1.08||1;
+    const Y=v=>H-pad.b-(v-ymin)/((ymax-ymin)||1)*(H-pad.t-pad.b);
+    g.strokeStyle=s.color; g.lineWidth=1.8; g.beginPath();
+    s.y.forEach((v,i)=>{ const x=X(xs[i]),y=Y(v); i?g.lineTo(x,y):g.moveTo(x,y); });
+    g.stroke();
+    g.fillStyle=s.color; g.font='10px ui-monospace,monospace';
+    const tx = s.axis===2 ? W-pad.r+4 : 4;
+    g.fillText(ymax.toPrecision(3), tx, pad.t+8);
+    g.fillText(s.label, tx, H-pad.b-2);
+  });
+  g.fillStyle='#9aa7b4'; g.font='10px ui-sans-serif';
+  g.fillText(xlabel, W/2-14, H-4);
+  g.fillText(xmin.toFixed(0), pad.l, H-8); g.fillText(xmax.toFixed(0), W-pad.r-18, H-8);
+}
+
+function renderEvac(r){
+  const ev=r.impact?.evacuation||[], st=r.impact?.settlements||[];
+  $('#tab-evac').innerHTML = `
+    <div class="note">Warning time is the modelled first-arrival of &ge;0.30 m depth at each settlement,
+      measured from the moment the breach starts to form.</div>
+    <table><thead><tr><th>Band</th><th class="n">Settlements</th><th class="n">Max depth</th></tr></thead><tbody>
+    ${ev.map(e=>`<tr><td><b>${esc(e.band)}</b><br/><span class="src">${esc((e.names||[]).join(', '))}</span></td>
+      <td class="n">${fmt(e.settlements,0)}</td><td class="n">${fmt(e.max_depth_m,1)} m</td></tr>`).join('')}
+    </tbody></table>
+    <h2 style="font-size:11px;color:var(--dim);text-transform:uppercase;margin-top:14px">Earliest-hit settlements</h2>
+    <table><thead><tr><th>Name</th><th class="n">Arrival</th><th class="n">Depth</th><th>Hazard</th></tr></thead><tbody>
+    ${st.slice(0,25).map(s=>`<tr><td>${esc(s.name)}<span class="src"> ${esc(s.place||'')}</span></td>
+      <td class="n">${s.arrival_min==null?'&ndash;':fmt(s.arrival_min,1)+' min'}</td>
+      <td class="n">${fmt(s.depth_m,1)} m</td>
+      <td><span class="hz${s.hazard_class}">&#9632;</span> ${esc(s.hazard_name)}</td></tr>`).join('')}
+    </tbody></table>`;
+}
+
+function renderValid(r){
+  const v=r.validation||{};
+  if(v.error){ $('#tab-valid').innerHTML=`<div class="note" style="border-color:var(--warn)">Sentinel-1 unavailable: ${esc(v.error)}</div>`; return; }
+  const m=v.metrics||{};
+  $('#tab-valid').innerHTML = `
+    <div class="note">${esc((v.notes||[]).join(' '))}</div>
+    <h2 style="font-size:11px;color:var(--dim);text-transform:uppercase">Scene</h2>
+    <table><tbody>
+      <tr><td>Product</td><td class="n">${esc(v.scene?.collection||'')}</td></tr>
+      <tr><td>Scene</td><td class="n src">${esc(v.scene?.item_id||'')}</td></tr>
+      <tr><td>Acquired</td><td class="n">${esc((v.scene?.datetime||'').slice(0,19))}</td></tr>
+      <tr><td>Otsu threshold</td><td class="n">${fmt(v.scene?.otsu_threshold_db,2)} dB</td></tr>
+    </tbody></table>
+    <h2 style="font-size:11px;color:var(--dim);text-transform:uppercase;margin-top:14px">Extents</h2>
+    <table><tbody>
+      <tr><td>Modelled inundation</td><td class="n">${fmt(v.model_extent_km2,2)} km&sup2;</td></tr>
+      <tr><td>Observed SAR water</td><td class="n">${fmt(v.observed_extent_km2,2)} km&sup2;</td></tr>
+      ${v.permanent_water_km2!=null?`<tr><td>Permanent water</td><td class="n">${fmt(v.permanent_water_km2,2)} km&sup2;</td></tr>`:''}
+    </tbody></table>
+    ${v.mode==='benchmark'?`<h2 style="font-size:11px;color:var(--dim);text-transform:uppercase;margin-top:14px">Skill</h2>
+    <table><tbody>
+      <tr><td>IoU / CSI</td><td class="n">${fmt(m.iou,3)}</td></tr>
+      <tr><td>POD</td><td class="n">${fmt(m.pod,3)}</td></tr>
+      <tr><td>FAR</td><td class="n">${fmt(m.far,3)}</td></tr>
+      <tr><td>F1</td><td class="n">${fmt(m.f1,3)}</td></tr>
+    </tbody></table>`:`<h2 style="font-size:11px;color:var(--dim);text-transform:uppercase;margin-top:14px">Overlap</h2>
+    <table><tbody>
+      <tr><td>Model &cap; observed water</td><td class="n">${fmt(m.overlap_with_observed_water_km2,2)} km&sup2;</td></tr>
+      <tr><td>Newly inundated land</td><td class="n">${fmt(m.modelled_beyond_observed_water_km2,2)} km&sup2;</td></tr>
+    </tbody></table>`}`;
+}
+
+function renderProv(r,man){
+  const src=man.data_sources||{}, qc=man.qc||{};
+  const gate=(o)=>o?.pass===true?'<span class="pill ok">pass</span>'
+                :o?.pass===false?'<span class="pill bad">fail</span>':'<span class="pill">n/a</span>';
+  $('#tab-prov').innerHTML = `
+    <h2 style="font-size:11px;color:var(--dim);text-transform:uppercase">QC gates</h2>
+    <table><tbody>
+      <tr><td>DEM</td><td class="n">${gate(qc.dem)}</td></tr>
+      <tr><td>Reservoir H&ndash;V&ndash;A</td><td class="n">${gate(qc.reservoir)}</td></tr>
+      <tr><td>Breach mass balance</td><td class="n">${gate(qc.breach?.mass_balance)}</td></tr>
+      <tr><td>Peak-discharge envelopes</td><td class="n">${gate(qc.breach?.peak_discharge_envelopes)}</td></tr>
+      <tr><td>Breach geometry</td><td class="n">${gate(qc.breach?.geometry)}</td></tr>
+      <tr><td>SPH&harr;weir balance</td><td class="n">${gate(qc.sph_balance)}</td></tr>
+      <tr><td>Exposure</td><td class="n">${gate(qc.exposure)}</td></tr>
+    </tbody></table>
+    ${qc.breach?.peak_discharge_envelopes?`<div class="note">
+      Routed peak ${fmt(qc.breach.peak_discharge_envelopes.routed_peak_m3s,0)} m&sup3;/s vs
+      Froehlich&nbsp;1995 ${fmt(qc.breach.peak_discharge_envelopes.froehlich_1995_m3s,0)} and
+      Costa&amp;Schuster&nbsp;1988 ${fmt(qc.breach.peak_discharge_envelopes.costa_schuster_1988_m3s,0)}.
+    </div>`:''}
+    ${(qc.exposure?.messages||[]).length?`<div class="note" style="border-color:var(--warn)">
+      ${qc.exposure.messages.map(esc).join('<br/>')}</div>`:''}
+    ${(qc.exposure?.warnings||[]).length?`<div class="note" style="border-color:var(--warn)">
+      ${qc.exposure.warnings.map(esc).join('<br/><br/>')}</div>`:''}
+    ${(qc.failed_gates||[]).length?`<div class="note" style="border-color:var(--bad)">
+      Failed gates: ${qc.failed_gates.map(esc).join(', ')}</div>`:''}
+    <h2 style="font-size:11px;color:var(--dim);text-transform:uppercase;margin-top:14px">Data provenance</h2>
+    <table><tbody>
+      ${Object.entries(src).map(([k,v])=>`<tr><td>${esc(k)}</td><td class="src">${esc(typeof v==='object'?JSON.stringify(v):v)}</td></tr>`).join('')}
+    </tbody></table>
+    <h2 style="font-size:11px;color:var(--dim);text-transform:uppercase;margin-top:14px">DEM</h2>
+    <table><tbody>
+      <tr><td>Grid</td><td class="n">${(qc.dem?.grid||[]).join(' &times; ')} @ ${(qc.dem?.cell_size_m||[])[0]} m</td></tr>
+      <tr><td>CRS</td><td class="n">${esc(qc.dem?.crs||'')}</td></tr>
+      <tr><td>Elevation range</td><td class="n">${fmt(qc.dem?.z_min_m,0)} &ndash; ${fmt(qc.dem?.z_max_m,0)} m</td></tr>
+      <tr><td>Voids</td><td class="n">${fmt((qc.dem?.void_fraction||0)*100,3)}%</td></tr>
+      <tr><td>Mean slope</td><td class="n">${fmt(qc.dem?.mean_slope_deg,1)}&deg;</td></tr>
+    </tbody></table>
+    <h2 style="font-size:11px;color:var(--dim);text-transform:uppercase;margin-top:14px">Timings</h2>
+    <table><tbody>${Object.entries(man.timings||{}).map(([k,v])=>
+      `<tr><td>${esc(k)}</td><td class="n">${fmt(v,1)} s</td></tr>`).join('')}</tbody></table>`;
+}
+
+function renderExport(r,id){
+  const e=r.exports||{};
+  const dl=(kind,label,desc)=>`<div style="margin-bottom:8px">
+    <a href="/api/runs/${id}/download/${kind}"><b>${label}</b></a>
+    <div class="src">${desc}</div></div>`;
+  $('#tab-export').innerHTML = `
+    ${dl('shp','ESRI Shapefile (.shp + .prj)','Hazard-classified flood extent polygons, projected CRS.')}
+    ${dl('kmz','Google Earth (.kmz)','Hazard-classified extent in WGS84, styled by class.')}
+    ${dl('geojson','GeoJSON','Flood extent for web GIS.')}
+    ${dl('rasters','GeoTIFF rasters (zip)','Depth, velocity, hazard rating/class, arrival time, duration, conditioned DEM.')}
+    ${dl('tables','Tables (zip)','Breach hydrograph, settlements, evacuation timeline, districts, facilities.')}
+    ${dl('all','Everything (zip)','All products plus manifest.json and results.json.')}
+    <h2 style="font-size:11px;color:var(--dim);text-transform:uppercase;margin-top:14px">Files produced</h2>
+    <table><tbody>
+      <tr><td>Rasters</td><td class="src">${(e.rasters||[]).map(esc).join('<br/>')}</td></tr>
+      <tr><td>Tables</td><td class="src">${(e.tables||[]).map(esc).join('<br/>')}</td></tr>
+      <tr><td>Animation frames</td><td class="n">${fmt(e.frames?.count,0)}</td></tr>
+    </tbody></table>`;
+}
+
+// ---------------------------------------------------------------- tabs
+$('#tabs').addEventListener('click',e=>{
+  const b=e.target.closest('button'); if(!b) return;
+  document.querySelectorAll('#tabs button').forEach(x=>x.classList.toggle('on',x===b));
+  document.querySelectorAll('.tabpane').forEach(p=>p.classList.toggle('on',p.id==='tab-'+b.dataset.t));
+  if(b.dataset.t==='hydro' && current) renderHydro(current);
+});
+
+// ---------------------------------------------------------------- 3D view
+// Terrain + water surface in WebGL. The 2D map answers "where does it go";
+// this answers "how deep is it in the valley", which is the question a gorge
+// cross-section actually poses. Everything is rendered from the DEM numbers
+// and the solver's depth frames -- no pre-baked mesh, no external tiles.
+let T3 = {ready:false, on:false, data:null, frame:0, vex:2.0, mode:'depth'};
+
+function b64ToBytes(b64){
+  const bin = atob(b64), out = new Uint8Array(bin.length);
+  for(let i=0;i<bin.length;i++) out[i] = bin.charCodeAt(i);
+  return out;
+}
+
+function init3D(){
+  if(T3.ready) return;
+  const host = document.getElementById('view3d');
+  T3.renderer = new THREE.WebGLRenderer({antialias:true});
+  T3.renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
+  host.appendChild(T3.renderer.domElement);
+  T3.scene = new THREE.Scene();
+  T3.scene.background = new THREE.Color(0x0b0f15);
+  // Fog range is set per-run in load3D. Hard-coding metres is a trap: a wider
+  // study area pushes the fit camera further out, and a fixed 40-160 km fog
+  // then washes the whole scene -- terrain, satellite colour and the dam
+  // marker alike -- into the background colour.
+  T3.scene.fog = new THREE.Fog(0x0b0f15, 1e9, 2e9);
+  T3.camera = new THREE.PerspectiveCamera(45, 1, 10, 400000);
+  T3.controls = new THREE.OrbitControls(T3.camera, T3.renderer.domElement);
+  T3.controls.enableDamping = true; T3.controls.dampingFactor = 0.08;
+  T3.scene.add(new THREE.AmbientLight(0xffffff, 0.55));
+  const sun = new THREE.DirectionalLight(0xffffff, 0.95);
+  sun.position.set(-1, 1.4, 0.7); T3.scene.add(sun);
+  T3.ready = true;
+
+  const resize = () => {
+    const w = host.clientWidth || 1, h = host.clientHeight || 1;
+    T3.renderer.setSize(w, h, false);
+    T3.camera.aspect = w/h; T3.camera.updateProjectionMatrix();
+  };
+  T3.resize = () => { resize(); frameTerrain(); };
+  if(window.ResizeObserver) new ResizeObserver(resize).observe(host);
+  resize();
+
+  (function loop(){
+    requestAnimationFrame(loop);
+    if(T3.on){ T3.controls.update(); T3.renderer.render(T3.scene, T3.camera); }
+  })();
+}
+
+async function load3D(){
+  init3D();
+  if(T3.runId === runId && T3.data) return true;
+  let d;
+  try{ d = await (await fetch(`/api/runs/${runId}/file/terrain3d.json`)).json(); }
+  catch(e){ $('#stat3d').textContent = 'No 3D data for this run.'; return false; }
+  if(d.error || !d.elevation_b64){ $('#stat3d').textContent='No 3D data.'; return false; }
+
+  T3.runId = runId; T3.data = d; T3.frame = 0;
+  const nx=d.nx, ny=d.ny, n=nx*ny;
+  const elev = new Float32Array(b64ToBytes(d.elevation_b64).buffer);
+  T3.elev = elev;
+  T3.frames = (d.frames_b64||[]).map(b=>b64ToBytes(b));
+  T3.hazard = d.hazard_b64 ? b64ToBytes(d.hazard_b64) : null;
+  T3.sat = d.satellite_rgb_b64 ? b64ToBytes(d.satellite_rgb_b64) : null;
+
+  // drop anything from a previous run
+  ['terrain','water','damLine','damPin','damGlow'].forEach(k=>{ if(T3[k]){ T3.scene.remove(T3[k]); T3[k].geometry.dispose(); T3[k].material.dispose(); T3[k]=null; }});
+
+  const W = nx*d.dx_m, H = ny*d.dy_m;
+  const pos = new Float32Array(n*3), col = new Float32Array(n*3);
+  const zmin=d.z_min, zr=Math.max(d.z_max-d.z_min,1);
+  for(let j=0;j<ny;j++) for(let i=0;i<nx;i++){
+    const k=j*nx+i;
+    pos[k*3]   = (i/(nx-1)-0.5)*W;
+    pos[k*3+1] = elev[k]*T3.vex;
+    pos[k*3+2] = (j/(ny-1)-0.5)*H;
+    if(T3.sat){
+      // real Sentinel-2 colour per vertex; lifted slightly because the
+      // Lambert lighting darkens it again on the shaded faces
+      const r=T3.sat[k*3]/255, g=T3.sat[k*3+1]/255, b=T3.sat[k*3+2]/255;
+      if(r+g+b > 0.04){
+        col[k*3]=Math.min(r*1.35,1); col[k*3+1]=Math.min(g*1.35,1); col[k*3+2]=Math.min(b*1.35,1);
+      } else {                                 // granule gap -> synthetic relief
+        const t=(elev[k]-zmin)/zr;
+        col[k*3]=0.26+0.50*t; col[k*3+1]=0.26+0.48*t; col[k*3+2]=0.28+0.42*t;
+      }
+    } else {
+      const t=(elev[k]-zmin)/zr;
+      col[k*3]=0.26+0.50*t; col[k*3+1]=0.26+0.48*t; col[k*3+2]=0.28+0.42*t;
+    }
+  }
+  const idx = new Uint32Array((nx-1)*(ny-1)*6);
+  let o=0;
+  for(let j=0;j<ny-1;j++) for(let i=0;i<nx-1;i++){
+    const a=j*nx+i, b=a+1, c=a+nx, e=c+1;
+    idx[o++]=a; idx[o++]=c; idx[o++]=b;
+    idx[o++]=b; idx[o++]=c; idx[o++]=e;
+  }
+  const tg = new THREE.BufferGeometry();
+  tg.setAttribute('position', new THREE.BufferAttribute(pos,3));
+  tg.setAttribute('color', new THREE.BufferAttribute(col,3));
+  tg.setIndex(new THREE.BufferAttribute(idx,1));
+  tg.computeVertexNormals();
+  T3.terrain = new THREE.Mesh(tg, new THREE.MeshLambertMaterial({vertexColors:true}));
+  T3.scene.add(T3.terrain);
+
+  // Water as a custom shader: dry cells are DISCARDED in the fragment stage.
+  // A plain transparent mesh would blanket the whole valley in a faint film,
+  // which misreads as the entire domain being flooded.
+  const wpos = new Float32Array(pos), dep = new Float32Array(n), haz = new Float32Array(n);
+  const wg = new THREE.BufferGeometry();
+  wg.setAttribute('position', new THREE.BufferAttribute(wpos,3));
+  wg.setAttribute('aDepth', new THREE.BufferAttribute(dep,1));
+  wg.setAttribute('aHaz', new THREE.BufferAttribute(haz,1));
+  wg.setIndex(new THREE.BufferAttribute(idx,1));
+  T3.water = new THREE.Mesh(wg, new THREE.ShaderMaterial({
+    transparent:true, depthWrite:false, side:THREE.DoubleSide,
+    uniforms:{uCap:{value:d.depth_cap_m}, uMode:{value:0}},
+    vertexShader:`
+      attribute float aDepth; attribute float aHaz;
+      varying float vD; varying float vH;
+      void main(){ vD=aDepth; vH=aHaz;
+        gl_Position = projectionMatrix*modelViewMatrix*vec4(position,1.0); }`,
+    fragmentShader:`
+      precision mediump float;
+      uniform float uCap; uniform int uMode;
+      varying float vD; varying float vH;
+      void main(){
+        if(vD <= 0.02) discard;                    // dry: draw nothing at all
+        vec3 c;
+        if(uMode==1){
+          if(vH<1.5)      c=vec3(0.17,0.50,0.72);
+          else if(vH<2.5) c=vec3(0.50,0.80,0.73);
+          else if(vH<3.5) c=vec3(0.99,0.68,0.38);
+          else            c=vec3(0.84,0.10,0.11);
+        } else {
+          float t = clamp(vD/max(uCap,0.001),0.0,1.0);
+          c = mix(vec3(0.68,0.85,0.96), vec3(0.02,0.17,0.45), pow(t,0.65));
+        }
+        gl_FragColor = vec4(c, 0.90);
+      }`
+  }));
+  T3.scene.add(T3.water);
+
+  T3.extent = {W:W, H:H};
+  const diag = Math.hypot(W, H);
+  T3.scene.fog.near = diag * 0.9;      // only the far rim hazes out
+  T3.scene.fog.far  = diag * 4.0;
+  addDamMarker(d, W, H);
+  frameTerrain();
+
+  $('#tslider').max = Math.max((T3.frames.length||1)-1, 0);
+  setFrame3D(0);
+  return true;
+}
+
+// Frame the terrain so it FILLS the viewport. The previous camera placement
+// was a hand-picked multiple of the diagonal, which left the mesh floating in
+// a sea of background and wasted most of the screen. Fit the actual bounding
+// sphere against the camera FOV instead, accounting for the aspect ratio so a
+// tall narrow pane does not crop the valley.
+function frameTerrain(){
+  if(!T3.data || !T3.extent) return;
+  const d=T3.data, {W,H}=T3.extent;
+  const zr=(d.z_max-d.z_min)*T3.vex;
+  const cy=(d.z_min+(d.z_max-d.z_min)*0.35)*T3.vex;
+  const radius=0.5*Math.sqrt(W*W + H*H + zr*zr);
+  const vFov=THREE.MathUtils.degToRad(T3.camera.fov);
+  const hFov=2*Math.atan(Math.tan(vFov/2)*T3.camera.aspect);
+  const dist=radius/Math.sin(Math.min(vFov,hFov)/2)*0.62;   // 0.62 = snug crop
+  const az=Math.PI*0.22, el=Math.PI*0.30;                    // oblique, map-like
+  T3.camera.position.set(
+    Math.sin(az)*Math.cos(el)*dist,
+    cy + Math.sin(el)*dist,
+    Math.cos(az)*Math.cos(el)*dist);
+  T3.camera.near=Math.max(dist/2000,1); T3.camera.far=dist*8;
+  T3.camera.updateProjectionMatrix();
+  T3.controls.target.set(0, cy, 0);
+  T3.controls.update();
+}
+
+// The dam is the whole point of the scene and was simply absent from it.
+// NOTE: LineBasicMaterial.linewidth is ignored by virtually every WebGL
+// implementation -- lines always rasterise 1px wide, which at basin scale is a
+// few dozen pixels total and effectively invisible. So the crest is real
+// geometry (a tube) and the marker is a solid cone, both drawn with depthTest
+// off so the barrier stays findable even when the terrain occludes it.
+function addDamMarker(d, W, H){
+  ['damLine','damPin','damGlow'].forEach(k=>{ if(T3[k]){ T3.scene.remove(T3[k]);
+    T3[k].geometry.dispose(); T3[k].material.dispose(); T3[k]=null; }});
+  const crest=d.dam_crest;
+  if(!crest || !crest.length) return;
+
+  const toWorld = ([i,j,z]) => new THREE.Vector3(
+    (i/(d.nx-1)-0.5)*W, z*T3.vex, (j/(d.ny-1)-0.5)*H);
+  // de-duplicate: the crest is rasterised to cells, so repeats are common and
+  // a curve through coincident points is degenerate
+  const seen=new Set(), pts=[];
+  crest.forEach(c=>{ const k=c[0]+','+c[1];
+    if(!seen.has(k)){ seen.add(k); pts.push(toWorld(c)); }});
+  const lift=(d.z_max-d.z_min)*0.01*T3.vex + 10;
+  pts.forEach(v=>v.y+=lift);
+
+  const scene=Math.max(W,H);
+  const tubeR=scene*0.006;
+  if(pts.length>=2){
+    const curve=new THREE.CatmullRomCurve3(pts);
+    T3.damLine=new THREE.Mesh(
+      new THREE.TubeGeometry(curve, Math.max(pts.length*4,16), tubeR, 10, false),
+      new THREE.MeshBasicMaterial({color:0xff3b30, depthTest:false,
+                                   transparent:true, opacity:0.95}));
+  } else {
+    T3.damLine=new THREE.Mesh(
+      new THREE.SphereGeometry(tubeR*1.6, 16, 12),
+      new THREE.MeshBasicMaterial({color:0xff3b30, depthTest:false}));
+    T3.damLine.position.copy(pts[0]);
+  }
+  T3.damLine.renderOrder=20; T3.scene.add(T3.damLine);
+
+  const mid=pts[Math.floor(pts.length/2)].clone();
+  const pinH=scene*0.075, coneR=scene*0.016;
+  T3.damPin=new THREE.Mesh(
+    new THREE.ConeGeometry(coneR, pinH*0.45, 18),
+    new THREE.MeshBasicMaterial({color:0xff3b30, depthTest:false,
+                                 transparent:true, opacity:0.95}));
+  T3.damPin.position.set(mid.x, mid.y + pinH, mid.z);
+  T3.damPin.rotation.x = Math.PI;                 // apex points at the crest
+  T3.damPin.renderOrder=20; T3.scene.add(T3.damPin);
+
+  T3.damGlow=new THREE.Mesh(
+    new THREE.RingGeometry(scene*0.012, scene*0.020, 32),
+    new THREE.MeshBasicMaterial({color:0xff3b30, side:THREE.DoubleSide,
+                                 depthTest:false, transparent:true, opacity:0.5}));
+  T3.damGlow.position.copy(mid); T3.damGlow.rotation.x=-Math.PI/2;
+  T3.damGlow.renderOrder=19; T3.scene.add(T3.damGlow);
+  T3.damMid=mid.clone();
+}
+
+function setFrame3D(i){
+  if(!T3.data || !T3.water) return;
+  const d=T3.data, nx=d.nx, ny=d.ny, n=nx*ny;
+  T3.frame = Math.max(0, Math.min(i, Math.max(T3.frames.length-1,0)));
+  const q = T3.frames[T3.frame];
+  const wp = T3.water.geometry.attributes.position.array;
+  const dep = T3.water.geometry.attributes.aDepth.array;
+  const haz = T3.water.geometry.attributes.aHaz.array;
+  const scale = d.depth_cap_m/255;
+  let wet=0, dmax=0;
+  for(let k=0;k<n;k++){
+    const h = q ? q[k]*scale : 0;
+    dep[k]=h; if(h>0.02){wet++; if(h>dmax)dmax=h;}
+    haz[k]=T3.hazard?T3.hazard[k]:0;
+    wp[k*3+1]=(T3.elev[k]+h)*T3.vex;
+  }
+  T3.water.geometry.attributes.position.needsUpdate=true;
+  T3.water.geometry.attributes.aDepth.needsUpdate=true;
+  T3.water.geometry.attributes.aHaz.needsUpdate=true;
+  const t=(d.times_s||[])[T3.frame]||0;
+  $('#tlabel').textContent = `${(t/60).toFixed(1)} min`;
+  $('#tslider').value = T3.frame;
+  const cell=(d.dx_m*d.dy_m)/1e6;
+  $('#stat3d').innerHTML = `t = ${(t/60).toFixed(1)} min<br/>wet ${(wet*cell).toFixed(1)} km&sup2;
+    &middot; max ${dmax.toFixed(1)} m<br/>grid ${nx}&times;${ny} @ ${d.dx_m.toFixed(0)} m`;
+}
+
+function applyVex(){
+  if(!T3.data) return;
+  const n=T3.data.nx*T3.data.ny;
+  const tp=T3.terrain.geometry.attributes.position.array;
+  for(let k=0;k<n;k++) tp[k*3+1]=T3.elev[k]*T3.vex;
+  T3.terrain.geometry.attributes.position.needsUpdate=true;
+  T3.terrain.geometry.computeVertexNormals();
+  // the crest marker is anchored in world units, so it has to follow
+  addDamMarker(T3.data, T3.extent.W, T3.extent.H);
+  setFrame3D(T3.frame);
+  frameTerrain();
+}
+
+async function setView(three){
+  T3.on = three;
+  $('#btn2d').classList.toggle('on', !three);
+  $('#btn3d').classList.toggle('on', three);
+  $('#view3d').style.display = three ? 'block' : 'none';
+  $('#map').style.display = three ? 'none' : 'block';
+  $('#ctl3d').style.display = three ? 'block' : 'none';
+  $('#layerctl').style.display = three ? 'none' : 'flex';
+  if(three){
+    if(!runId){ $('#stat3d').textContent='Load a run first.'; return; }
+    stopPlay();
+    const ok = await load3D();
+    $('#timebar').style.display = ok ? 'flex' : 'none';
+    T3.resize && T3.resize();
+  } else {
+    map.invalidateSize({animate:false});
+    showLayer();
+  }
+}
+
+$('#btn2d').onclick = () => setView(false);
+$('#btn3d').onclick = () => setView(true);
+$('#vex').oninput = e => { T3.vex=parseFloat(e.target.value);
+  $('#vexLabel').textContent=T3.vex.toFixed(1)+'×'; applyVex(); };
+$('#fitview').onclick = () => frameTerrain();
+$('#gotodam').onclick = () => {
+  if(!T3.damMid) return;
+  const d=T3.data, span=Math.max(T3.extent.W,T3.extent.H)*0.13;
+  T3.controls.target.copy(T3.damMid);
+  T3.camera.position.set(T3.damMid.x - span, T3.damMid.y + span*0.75,
+                         T3.damMid.z + span);
+  T3.controls.update();
+};
+$('#surfmode').onchange = e => {
+  T3.mode=e.target.value;
+  $('#surfLabel').textContent = e.target.value==='hazard'?'Hazard':'Depth';
+  if(T3.water) T3.water.material.uniforms.uMode.value = e.target.value==='hazard'?1:0;
+};
+
+// ---------------------------------------------------------------- boot
+(async function(){
+  initMap(); buildLayerCtl();
+  try{
+    const h=await (await fetch('/api/health')).json();
+    $('#engine').textContent = 'engine: '+(h.numba?'numba JIT':'numpy');
+  }catch(e){}
+  await loadPresets();
+  const done = await refreshRuns();
+  if(done.length) loadRun(done[0].run_id);
+
+  // Keep watching: a run launched from this page, from the CLI, or from another
+  // tab finishes on its own schedule. Without this the dropdown stays as it was
+  // at page load, which reads as "nothing ever ran".
+  setInterval(async () => {
+    const d = await refreshRuns();
+    if(d.length && !runId) loadRun(d[0].run_id);
+  }, 5000);
+})();
+</script>
+</body>
+</html>
