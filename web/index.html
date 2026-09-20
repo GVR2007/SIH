@@ -218,6 +218,8 @@ button.primary{background:linear-gradient(180deg,#5cb2ff,#3d93e6);box-shadow:0 1
     <div class="tabs" id="tabs">
       <button data-t="impact" class="on">Impact</button>
       <button data-t="models">Models</button>
+      <button data-t="select">Model choice</button>
+      <button data-t="risk">Breach risk</button>
       <button data-t="hydro">Hydrographs</button>
       <button data-t="evac">Evacuation</button>
       <button data-t="valid">Validation</button>
@@ -226,6 +228,8 @@ button.primary{background:linear-gradient(180deg,#5cb2ff,#3d93e6);box-shadow:0 1
     </div>
     <div class="tabpane on" id="tab-impact"></div>
     <div class="tabpane" id="tab-models"></div>
+    <div class="tabpane" id="tab-select"></div>
+    <div class="tabpane" id="tab-risk"></div>
     <div class="tabpane" id="tab-hydro"></div>
     <div class="tabpane" id="tab-evac"></div>
     <div class="tabpane" id="tab-valid"></div>
@@ -490,6 +494,7 @@ async function loadRun(id){
   buildLayerCtl();
   if(T3.on){ T3.data=null; setView(true); } else showLayer();
   renderImpact(res); renderModels(res); renderHydro(res);
+  renderSelect(res); renderRisk(res);
   renderEvac(res); renderValid(res); renderProv(res,man); renderExport(res,id);
 }
 
@@ -502,8 +507,16 @@ function renderImpact(r){
       <div><span>Inundated area</span><b>${fmt(hz.inundated_area_km2,1)} km&sup2;</b></div>
       <div><span>Population exposed</span><b>${fmt(pop.total_exposed,0)}</b></div>
       <div><span>Max depth</span><b>${fmt(hz.max_depth_m,1)} m</b></div>
-      <div><span>Max velocity</span><b>${fmt(hz.max_velocity_ms,1)} m/s</b></div>
+      <div><span>Velocity p99.9</span><b>${fmt(hz.velocity_percentiles_ms?.['p99.9'],1)} m/s</b></div>
     </div>
+    ${hz.velocity_percentiles_ms?`<div class="note">
+      Velocity over wet cells &mdash; median <b>${fmt(hz.velocity_percentiles_ms.p50,1)}</b>,
+      p90 <b>${fmt(hz.velocity_percentiles_ms.p90,1)}</b>,
+      p99 <b>${fmt(hz.velocity_percentiles_ms.p99,1)}</b>,
+      p99.9 <b>${fmt(hz.velocity_percentiles_ms['p99.9'],1)}</b>,
+      single-cell max <b>${fmt(hz.max_velocity_ms,1)}</b> m/s.
+      The maximum is one cell and is usually on terrain too steep for the
+      shallow-water assumption; quote the percentiles.</div>`:''}
     <h2 style="font-size:11px;color:var(--dim);text-transform:uppercase">Hazard classes</h2>
     <table><thead><tr><th>Class</th><th class="n">Area km&sup2;</th><th class="n">Population</th></tr></thead><tbody>
     ${cls.map((c,i)=>`<tr><td><span class="hz${c.class}">&#9632;</span> ${esc(c.name)}</td>
@@ -516,8 +529,16 @@ function renderImpact(r){
       <tr><td>Mapped in domain</td><td class="n">${fmt(im.buildings?.total_in_domain,0)}</td></tr>
       <tr><td>Inundated</td><td class="n">${fmt(im.buildings?.exposed,0)}</td></tr>
       <tr><td>Mean damage fraction</td><td class="n">${fmt(im.buildings?.mean_damage_fraction,3)}</td></tr>
-      <tr><td>d&middot;v &gt; 7 m&sup2;/s (total destruction)</td><td class="n">${fmt(im.buildings?.structural_dv?.dv_gt_7_total_destruction,0)}</td></tr>
+      <tr><td>d&middot;v &gt; 7 m&sup2;/s (total destruction)</td><td class="n">${fmt(im.buildings?.structural_dv?.dv_gt_7_m2s,0)}</td></tr>
+      <tr><td>Occupancy tagged in OSM</td><td class="n">${fmt(100*(im.buildings?.occupancy_tagged_fraction||0),1)} %</td></tr>
     </tbody></table>
+    ${(im.buildings?.by_occupancy||[]).length?`<table><thead><tr><th>Occupancy</th>
+      <th class="n">Inundated</th><th class="n">Mean damage</th></tr></thead><tbody>
+    ${im.buildings.by_occupancy.map(o=>`<tr><td>${esc(o.occupancy)}</td>
+      <td class="n">${fmt(o.buildings,0)}</td>
+      <td class="n">${fmt(o.mean_damage_fraction,3)}</td></tr>`).join('')}</tbody></table>`:''}
+    ${im.buildings?.occupancy_note?`<div class="note">${esc(im.buildings.occupancy_note)}
+      ${esc(im.buildings.spatial_method||'')}</div>`:''}
 
     <h2 style="font-size:11px;color:var(--dim);text-transform:uppercase;margin-top:14px">Lifelines</h2>
     <table><tbody>
@@ -534,33 +555,155 @@ function renderImpact(r){
 
     <h2 style="font-size:11px;color:var(--dim);text-transform:uppercase;margin-top:14px">Indicative loss</h2>
     <table><tbody>
-      <tr><td>Buildings</td><td class="n">&#8377; ${fmt((im.losses?.buildings||0)/1e7,2)} cr</td></tr>
-      <tr><td>Roads</td><td class="n">&#8377; ${fmt((im.losses?.roads||0)/1e7,2)} cr</td></tr>
-      <tr><td>Cropland</td><td class="n">&#8377; ${fmt((im.losses?.cropland||0)/1e7,2)} cr</td></tr>
+      <tr><td>Buildings</td><td class="n">&#8377; ${fmt((im.losses?.buildings||0)/1e7,2)} cr
+        <span class="src">${fmt(im.losses?.percent_of_total?.buildings,1)}%</span></td></tr>
+      <tr><td>Roads</td><td class="n">&#8377; ${fmt((im.losses?.roads||0)/1e7,2)} cr
+        <span class="src">${fmt(im.losses?.percent_of_total?.roads,1)}%</span></td></tr>
+      <tr><td>Cropland</td><td class="n">&#8377; ${fmt((im.losses?.cropland||0)/1e7,2)} cr
+        <span class="src">${fmt(im.losses?.percent_of_total?.cropland,1)}%</span></td></tr>
       <tr><td><b>Total</b></td><td class="n"><b>&#8377; ${fmt(im.losses?.total_crore,2)} cr</b></td></tr>
     </tbody></table>
+    ${im.losses?.dominant_component_note?`<div class="note" style="border-color:var(--warn)">
+      ${esc(im.losses.dominant_component_note)}</div>`:''}
+    <h2 style="font-size:11px;color:var(--dim);text-transform:uppercase;margin-top:14px">Unit rates used (assumptions)</h2>
+    <table><tbody>
+    ${Object.entries(im.losses?.unit_values_used||{}).filter(([k])=>!k.startsWith('_'))
+      .map(([k,v])=>`<tr><td>${esc(k.replace(/_/g,' '))}</td><td class="n">${
+        typeof v==='number'?v.toLocaleString():esc(String(v))}</td></tr>`).join('')}
+    </tbody></table>
+    <div class="note">${esc(im.losses?.unit_values_used?._provenance||'')}</div>
     <div class="note">${esc(im.losses?.caveat||'')}</div>`;
+}
+
+// --- ADAPTIVE MODEL SELECTION ------------------------------------------
+// The framework's own decision about which physics to run, and the evidence
+// it used. This is the technical novelty; it gets its own tab rather than a
+// footnote, because "we ran everything and compared" is what it replaces.
+function renderSelect(r){
+  const ms=r.model_selection, ad=r.model_adequacy;
+  if(!ms && !ad){ $('#tab-select').innerHTML='<div class="note">No model-selection record in this run.</div>'; return; }
+  const violLabel={bed_slope:'Bed slope',bed_curvature:'Bed curvature',surface_slope:'Surface slope'};
+  $('#tab-select').innerHTML = `
+    ${ms?`<div class="note"><b>Decision:</b> ${esc(ms.reason)}</div>
+    <table><tbody>
+      <tr><td>Models selected</td><td class="n">${(ms.selected_models||[]).map(esc).join(' + ')}</td></tr>
+      <tr><td>Near-field model run</td><td class="n">${ms.run_near_field
+        ?'<span class="pill ok">yes</span>':'<span class="pill">no &ndash; not needed</span>'}</td></tr>
+      <tr><td>Transfer section</td><td class="n">${ms.transfer_x_m!=null?fmt(ms.transfer_x_m,0)+' m':'&ndash;'}</td></tr>
+      <tr><td>Max non-hydrostatic index</td><td class="n">${fmt(ms.diagnostics?.max_nhi,2)}</td></tr>
+      <tr><td>Breach-jet velocity</td><td class="n">${fmt(ms.diagnostics?.jet_critical_velocity_ms,1)} m/s</td></tr>
+      <tr><td>Breach-jet critical depth</td><td class="n">${fmt(ms.diagnostics?.jet_critical_depth_m,1)} m</td></tr>
+    </tbody></table>
+    <h2 style="font-size:11px;color:var(--dim);text-transform:uppercase;margin-top:14px">Decision trace</h2>
+    ${(ms.decisions||[]).map(d=>`<div class="note"><b>${esc(d.test)}</b><br/>
+      <span class="src">${Object.entries(d).filter(([k])=>!['test','note','rationale','method'].includes(k))
+        .map(([k,v])=>esc(k.replace(/_/g,' '))+': '+esc(typeof v==='number'?v.toLocaleString(undefined,{maximumFractionDigits:3}):String(v))).join(' &middot; ')}</span>
+      ${d.rationale?`<br/><span class="src">${esc(d.rationale)}</span>`:''}
+      ${d.note?`<br/><span class="src">${esc(d.note)}</span>`:''}</div>`).join('')}
+    <div class="note">${esc(ms.policy||'')}</div>`:''}
+    ${ad?`<h2 style="font-size:11px;color:var(--dim);text-transform:uppercase;margin-top:14px">Adequacy of the solution produced</h2>
+    <div class="note"${ad.inadequate_area_fraction>0.1?' style="border-color:var(--warn)"':''}>${esc(ad.verdict||'')}</div>
+    <table><tbody>
+      <tr><td>Inundated area where SWE are valid</td><td class="n">${fmt(100*(1-(ad.inadequate_area_fraction||0)),1)} %</td></tr>
+      <tr><td>Area outside validity</td><td class="n">${fmt(ad.inadequate_area_km2,2)} km&sup2;</td></tr>
+      <tr><td>Supercritical area</td><td class="n">${fmt(100*(ad.supercritical_area_fraction||0),1)} %</td></tr>
+    </tbody></table>
+    <h2 style="font-size:11px;color:var(--dim);text-transform:uppercase;margin-top:14px">Why validity fails, where it does</h2>
+    <table><thead><tr><th>Violated assumption</th><th class="n">Cells</th></tr></thead><tbody>
+    ${Object.entries(ad.dominant_violation||{}).map(([k,v])=>`<tr><td>${esc(violLabel[k]||k)}</td><td class="n">${fmt(v,0)}</td></tr>`).join('')}
+    </tbody></table>
+    <table><tbody>${Object.entries(ad.nhi_percentiles||{}).map(([k,v])=>
+      `<tr><td>NHI ${esc(k)}</td><td class="n">${fmt(v,2)}</td></tr>`).join('')}</tbody></table>
+    ${ad.scope?`<div class="note">${esc(ad.scope)}</div>`:''}
+    ${ad.remedy?`<div class="note" style="border-color:var(--warn)">${esc(ad.remedy)}</div>`:''}
+    <div class="note">${esc(ad.method||'')}</div>`:''}`;
+}
+
+// --- POSSIBILITY OF BREACH ---------------------------------------------
+function renderRisk(r){
+  const f=r.failure_probability;
+  if(!f){ $('#tab-risk').innerHTML='<div class="note">No failure-probability record.</div>'; return; }
+  if(f.computed===false || f.error){
+    $('#tab-risk').innerHTML=`<div class="note" style="border-color:var(--warn)">
+      ${esc(f.note||f.error||'')}</div>`; return;
+  }
+  const ot=f.mechanisms?.overtopping;
+  $('#tab-risk').innerHTML = `
+    <div class="note">${esc(f.purpose||'')}</div>
+    <div class="kpi">
+      <div><span>Annual P(failure)</span><b>${f.annual_probability_of_failure!=null
+        ? f.annual_probability_of_failure.toExponential(2):'&ndash;'}</b></div>
+      <div><span>Return period</span><b>1 in ${f.return_period_y!=null
+        ? Number(f.return_period_y).toLocaleString(undefined,{maximumFractionDigits:0}):'&ndash;'} y</b></div>
+    </div>
+    <table><thead><tr><th>Mechanism</th><th class="n">P / year</th><th class="n">Basis</th></tr></thead><tbody>
+    ${Object.entries(f.mechanisms||{}).map(([k,v])=>`<tr><td>${esc(k.replace(/_/g,' '))}</td>
+      <td class="n">${v.annual_probability_of_breach!=null
+        ? Number(v.annual_probability_of_breach).toExponential(2):'&ndash;'}</td>
+      <td class="n">${v.computed?'<span class="pill ok">routed</span>':'<span class="pill warn">base rate</span>'}</td></tr>`).join('')}
+    </tbody></table>
+    ${ot&&ot.by_return_period?`<h2 style="font-size:11px;color:var(--dim);text-transform:uppercase;margin-top:14px">Design-flood routing</h2>
+    <table><thead><tr><th class="n">T (y)</th><th class="n">Peak inflow</th><th class="n">Peak level</th>
+      <th class="n">Freeboard</th><th class="n">Overtops</th></tr></thead><tbody>
+    ${ot.by_return_period.map(x=>`<tr><td class="n">${fmt(x.return_period_y,0)}</td>
+      <td class="n">${fmt(x.design_peak_inflow_m3s,0)}</td>
+      <td class="n">${fmt(x.peak_level_m,1)}</td>
+      <td class="n">${fmt(x.freeboard_remaining_m,2)}</td>
+      <td class="n">${x.overtopped?'<span class="pill bad">yes</span>':'<span class="pill ok">no</span>'}</td></tr>`).join('')}
+    </tbody></table>
+    <div class="note" style="border-color:var(--warn)">${esc(ot.caveat||'')}</div>
+    <h2 style="font-size:11px;color:var(--dim);text-transform:uppercase;margin-top:14px">Assumptions behind this number</h2>
+    ${(ot.assumptions||[]).map(a=>`<div class="note">${esc(a)}</div>`).join('')}`:''}
+    <div class="note" style="border-color:var(--warn)">${esc(f.honest_summary||'')}</div>
+    <div class="note">Base rates: ${esc(f.base_rate_source||'')}</div>`;
 }
 
 function renderModels(r){
   const rows=r.model_comparison||[];
+  const sv=r.sph_vs_weir;
+  // A configuration that was truncated, or that inherits a truncated input,
+  // must not sit in this table looking like an ordinary result next to clean
+  // ones. `status` is carried through from the pipeline -- render it.
+  const statusPill = m => {
+    if(m.is_primary) return ' <span class="pill ok">primary</span>';
+    if(m.status==='truncated') return ' <span class="pill bad">truncated</span>';
+    if(m.status==='derived_from_truncated_sph') return ' <span class="pill warn">from truncated SPH</span>';
+    return '';
+  };
   $('#tab-models').innerHTML = `
-    <div class="note">Primary model used for hazard and impact: <b>${esc(r.primary_model||'')}</b></div>
+    <div class="note">Primary model used for hazard and impact: <b>${esc(r.primary_model||'')}</b>
+      ${r.primary_model_rationale?`<br/><span class="src">${esc(r.primary_model_rationale)}</span>`:''}</div>
     <table><thead><tr><th>Model</th><th class="n">Peak Q<br/>m&sup3;/s</th><th class="n">Area<br/>km&sup2;</th>
       <th class="n">Max d<br/>m</th><th class="n">Max v<br/>m/s</th><th class="n">CPU<br/>s</th></tr></thead><tbody>
-    ${rows.map(m=>`<tr><td><b>${esc(m.model)}</b><br/><span class="src">${esc(m.description)}</span>
-      <br/><span class="src">${esc(m.cells_or_particles||'')}</span></td>
+    ${rows.map(m=>`<tr><td><b>${esc(m.model)}</b>${statusPill(m)}<br/><span class="src">${esc(m.description)}</span>
+      <br/><span class="src">${esc(m.cells_or_particles||'')}</span>
+      ${m.caveat?`<br/><span class="src" style="color:var(--bad)">${esc(m.caveat)}</span>`:''}</td>
       <td class="n">${fmt(m.peak_inflow_m3s,0)}</td><td class="n">${fmt(m.inundated_km2,2)}</td>
       <td class="n">${fmt(m.max_depth_m,1)}</td><td class="n">${fmt(m.max_velocity_ms,1)}</td>
       <td class="n">${fmt(m.wallclock_s,1)}</td></tr>`).join('')}
     </tbody></table>
-    ${r.sph_vs_weir?`<h2 style="font-size:11px;color:var(--dim);text-transform:uppercase;margin-top:14px">SPH &harr; weir balance check</h2>
+    ${(r.model_agreement||[]).length?`<h2 style="font-size:11px;color:var(--dim);text-transform:uppercase;margin-top:14px">Spatial agreement between configurations</h2>
+    <table><thead><tr><th>Pair</th><th class="n">IoU</th><th class="n">NSE</th>
+      <th class="n">KGE</th><th class="n">RMSE m</th><th class="n">Bias m</th></tr></thead><tbody>
+    ${r.model_agreement.map(a=>`<tr><td>${esc(a.compared_with||'')}</td>
+      <td class="n">${fmt(a.extent&&a.extent.iou,3)}</td>
+      <td class="n">${fmt(a.depth&&a.depth.nse,3)}</td>
+      <td class="n">${fmt(a.depth&&a.depth.kge,3)}</td>
+      <td class="n">${fmt(a.depth&&a.depth.rmse_m,3)}</td>
+      <td class="n">${fmt(a.depth&&a.depth.mean_bias_m,3)}</td></tr>`).join('')}
+    </tbody></table><div class="note">Agreement between two model configurations. Neither field is an observation, so this is not a skill score.</div>`:''}
+    ${sv?`<h2 style="font-size:11px;color:var(--dim);text-transform:uppercase;margin-top:14px">SPH &harr; weir balance check</h2>
     <table><tbody>
-      <tr><td>SPH peak / weir peak</td><td class="n">${fmt(r.sph_vs_weir.peak_ratio_sph_over_weir,3)}</td></tr>
-      <tr><td>Volume ratio</td><td class="n">${fmt(r.sph_vs_weir.volume_ratio,3)}</td></tr>
-      <tr><td>NSE (SPH vs weir)</td><td class="n">${fmt(r.sph_vs_weir.nse_sph_vs_weir,3)}</td></tr>
-      <tr><td>Balance gate</td><td class="n">${r.sph_vs_weir.balance_pass?'<span class="pill ok">pass</span>':'<span class="pill bad">fail</span>'}</td></tr>
-    </tbody></table><div class="note">${esc(r.sph_vs_weir.note||'')}</div>`:''}
+      <tr><td>SPH peak / weir peak</td><td class="n">${fmt(sv.peak_ratio_sph_over_weir,3)}</td></tr>
+      <tr><td>SPH q / critical flow</td><td class="n">${fmt(sv.ratio_to_critical_flow,3)}</td></tr>
+      <tr><td>SPH run completed</td><td class="n">${sv.sph_completed===false
+        ? '<span class="pill bad">no</span> '+fmt(sv.sph_simulated_s,1)+' / '+fmt(sv.sph_requested_s,1)+' s'
+        : '<span class="pill ok">yes</span>'}</td></tr>
+      <tr><td>Balance gate</td><td class="n">${sv.balance_pass?'<span class="pill ok">pass</span>':'<span class="pill bad">fail</span>'}</td></tr>
+    </tbody></table>
+    ${sv.sph_stop_reason?`<div class="note" style="border-color:var(--bad)"><b>SPH stopped early:</b> ${esc(sv.sph_stop_reason)}</div>`:''}
+    <div class="note">${esc(sv.interpretation||'')}</div>
+    <div class="note">${esc(sv.note||'')}</div>`:''}
     ${r.transfer_interface?`<h2 style="font-size:11px;color:var(--dim);text-transform:uppercase;margin-top:14px">Transfer interface</h2>
     <table><tbody>
       <tr><td>Transfer section</td><td class="n">x = ${fmt(r.transfer_interface.transfer_x_m,1)} m</td></tr>
@@ -690,6 +833,8 @@ function renderValid(r){
       <tr><td>POD</td><td class="n">${fmt(m.pod,3)}</td></tr>
       <tr><td>FAR</td><td class="n">${fmt(m.far,3)}</td></tr>
       <tr><td>F1</td><td class="n">${fmt(m.f1,3)}</td></tr>
+      <tr><td>Permanent water removed</td><td class="n">${m.permanent_water_removed
+        ?'<span class="pill ok">yes</span>':'<span class="pill bad">no &ndash; score inflated</span>'}</td></tr>
     </tbody></table>`:`<h2 style="font-size:11px;color:var(--dim);text-transform:uppercase;margin-top:14px">Overlap</h2>
     <table><tbody>
       <tr><td>Model &cap; observed water</td><td class="n">${fmt(m.overlap_with_observed_water_km2,2)} km&sup2;</td></tr>
@@ -699,30 +844,55 @@ function renderValid(r){
 
 function renderProv(r,man){
   const src=man.data_sources||{}, qc=man.qc||{};
+  // A gate is pass, fail, or COULD NOT BE EVALUATED. The third is not a pass:
+  // an empirical regression outside its calibration range can neither confirm
+  // nor refute the result, and rendering that as a grey "n/a" next to green
+  // ticks let a 16x envelope exceedance read as fine.
   const gate=(o)=>o?.pass===true?'<span class="pill ok">pass</span>'
-                :o?.pass===false?'<span class="pill bad">fail</span>':'<span class="pill">n/a</span>';
+                :o?.pass===false?'<span class="pill bad">fail</span>'
+                :o?'<span class="pill warn">inconclusive</span>':'<span class="pill">n/a</span>';
+  const env=qc.breach?.peak_discharge_envelopes;
+  const crit=qc.breach?.peak_discharge_critical_flow;
   $('#tab-prov').innerHTML = `
     <h2 style="font-size:11px;color:var(--dim);text-transform:uppercase">QC gates</h2>
     <table><tbody>
       <tr><td>DEM</td><td class="n">${gate(qc.dem)}</td></tr>
       <tr><td>Reservoir H&ndash;V&ndash;A</td><td class="n">${gate(qc.reservoir)}</td></tr>
       <tr><td>Breach mass balance</td><td class="n">${gate(qc.breach?.mass_balance)}</td></tr>
-      <tr><td>Peak-discharge envelopes</td><td class="n">${gate(qc.breach?.peak_discharge_envelopes)}</td></tr>
+      <tr><td>Peak Q vs critical flow <span class="src">(scale-independent)</span></td>
+        <td class="n">${gate(crit)}</td></tr>
+      <tr><td>Peak-discharge envelopes <span class="src">(empirical)</span></td>
+        <td class="n">${gate(env)}</td></tr>
       <tr><td>Breach geometry</td><td class="n">${gate(qc.breach?.geometry)}</td></tr>
       <tr><td>SPH&harr;weir balance</td><td class="n">${gate(qc.sph_balance)}</td></tr>
+      <tr><td>Tailwater / Villemonte</td><td class="n">${qc.tailwater?.enabled
+        ?'<span class="pill ok">engaged</span>':'<span class="pill warn">free discharge</span>'}</td></tr>
       <tr><td>Exposure</td><td class="n">${gate(qc.exposure)}</td></tr>
     </tbody></table>
-    ${qc.breach?.peak_discharge_envelopes?`<div class="note">
-      Routed peak ${fmt(qc.breach.peak_discharge_envelopes.routed_peak_m3s,0)} m&sup3;/s vs
-      Froehlich&nbsp;1995 ${fmt(qc.breach.peak_discharge_envelopes.froehlich_1995_m3s,0)} and
-      Costa&amp;Schuster&nbsp;1988 ${fmt(qc.breach.peak_discharge_envelopes.costa_schuster_1988_m3s,0)}.
-    </div>`:''}
+    ${crit?`<div class="note"${crit.pass?'':' style="border-color:var(--bad)"'}>
+      <b>Critical-flow ceiling:</b> routed peak ${fmt(crit.routed_peak_m3s,0)} m&sup3;/s against
+      ${fmt(crit.critical_flow_ceiling_m3s,0)} m&sup3;/s through a
+      ${fmt(crit.breach_top_width_m,0)} m breach at ${fmt(crit.head_m,0)} m head
+      (ratio ${fmt(crit.ratio_to_critical,2)}). ${esc(crit.interpretation||'')}</div>`:''}
+    ${env?`<div class="note">
+      Routed peak ${fmt(env.routed_peak_m3s,0)} m&sup3;/s vs
+      Froehlich&nbsp;1995 ${fmt(env.froehlich_1995_m3s,0)} and
+      Costa&amp;Schuster&nbsp;1988 ${fmt(env.costa_schuster_1988_m3s,0)}.
+      ${esc(env.interpretation||'')}</div>`:''}
+    ${qc.tailwater&&qc.tailwater.enabled===false?`<div class="note" style="border-color:var(--warn)">
+      ${esc(qc.tailwater.note||'')}</div>`:''}
+    ${(qc.reservoir?.messages||[]).length?`<div class="note">
+      ${qc.reservoir.messages.map(esc).join('<br/><br/>')}</div>`:''}
     ${(qc.exposure?.messages||[]).length?`<div class="note" style="border-color:var(--warn)">
       ${qc.exposure.messages.map(esc).join('<br/>')}</div>`:''}
     ${(qc.exposure?.warnings||[]).length?`<div class="note" style="border-color:var(--warn)">
       ${qc.exposure.warnings.map(esc).join('<br/><br/>')}</div>`:''}
     ${(qc.failed_gates||[]).length?`<div class="note" style="border-color:var(--bad)">
       Failed gates: ${qc.failed_gates.map(esc).join(', ')}</div>`:''}
+    ${(qc.inconclusive_gates||[]).length?`<div class="note" style="border-color:var(--warn)">
+      Inconclusive (could not be evaluated, NOT a pass):
+      ${qc.inconclusive_gates.map(esc).join(', ')}</div>`:''}
+    ${qc.conditioning?`<div class="note">DEM conditioning: ${qc.conditioning.map(esc).join(' &rarr; ')}</div>`:''}
     <h2 style="font-size:11px;color:var(--dim);text-transform:uppercase;margin-top:14px">Data provenance</h2>
     <table><tbody>
       ${Object.entries(src).map(([k,v])=>`<tr><td>${esc(k)}</td><td class="src">${esc(typeof v==='object'?JSON.stringify(v):v)}</td></tr>`).join('')}
