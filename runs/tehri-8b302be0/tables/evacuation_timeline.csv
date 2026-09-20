@@ -1,7 +1,0 @@
-band,from_min,to_min,settlements,names,max_depth_m
-0-15 min,0,15,1,[],172.74
-15-30 min,15,30,0,[],0.0
-30-60 min,30,60,1,['Naramghat'],121.94
-60-120 min,60,120,9,"['Chopra', 'Kyari', 'danderi', 'Koteshwar', 'nagar', 'pendars', 'Devprayag']",126.95
-120-240 min,120,240,8,"['Bah Bazaar', 'Shanti Bazaar', 'Beech Bazaar', 'Masniya Bani', 'Umrasu', 'Byānsghāt', 'Chham (001)', 'Bagwan']",123.66
->240 min,240,,0,[],0.0

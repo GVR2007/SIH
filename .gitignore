@@ -1,0 +1,33 @@
+# --- Python ----------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.so
+.venv/
+venv/
+env/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# --- Cached input data -------------------------------------------------------
+# Every layer under data/cache/ is a content-hashed copy of a PUBLIC dataset
+# (Copernicus GLO-30, ESA WorldCover, WorldPop, OSM/Overpass, Sentinel-1/2 via
+# the Planetary Computer, geoBoundaries).  The pipeline re-fetches anything
+# missing, so none of it needs to be in version control -- and it was ~96 MB.
+data/cache/
+
+# --- Run outputs -------------------------------------------------------------
+# Runs are reproducible from a scenario plus the cache. Keeping them in git
+# made .git 65 MB of GeoTIFF and PNG that no diff can ever be read.
+# To ship a reference run with the repo, add it explicitly:
+#     git add -f runs/<run_id>
+runs/*
+!runs/.gitkeep
+
+# --- Editor / OS -------------------------------------------------------------
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db

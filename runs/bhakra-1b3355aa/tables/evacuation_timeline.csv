@@ -1,7 +1,0 @@
-band,from_min,to_min,settlements,names,max_depth_m
-0-15 min,0,15,0,[],0.0
-15-30 min,15,30,0,[],0.0
-30-60 min,30,60,1,['Nangal'],125.57
-60-120 min,60,120,2,"['Naya Nangal', 'Santokhgarh']",141.64
-120-240 min,120,240,2,"['Heerpur', 'Anandpur Sahib']",190.15
->240 min,240,,5,"['Bhanupali', 'Ajouli', 'Kalsera', 'Mehatpur', 'Basoli Nichli']",155.98
