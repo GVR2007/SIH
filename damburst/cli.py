@@ -71,8 +71,7 @@ def cmd_run(args):
     # scenario parameters" and until now neither interface exposed them.
     av = {}
     for f in ("currency", "residential_per_building", "commercial_per_building",
-              "road_per_km", "cropland_per_hectare",
-              "road_partial_damage_factor"):
+              "road_per_km", "cropland_per_hectare"):
         v = getattr(args, f, None)
         if v is not None:
             av[f] = v
@@ -264,10 +263,6 @@ def main(argv=None):
     r.add_argument("--value-road-per-km", dest="road_per_km", type=float)
     r.add_argument("--value-cropland-per-ha", dest="cropland_per_hectare",
                    type=float)
-    r.add_argument("--road-damage-factor", dest="road_partial_damage_factor",
-                   type=float,
-                   help="fraction of road replacement cost written off when "
-                        "inundated (dominates the loss total)")
     r.set_defaults(fn=cmd_run)
 
     s = sub.add_parser("serve", help="start the dashboard")

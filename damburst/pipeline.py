@@ -28,11 +28,13 @@ import numpy as np
 from .core import adequacy as ADQ
 from .core import breach as B
 from .core import coupling as C
+from .core import damage as DMG
 from .core import datasources as ds
 from .core import dem as D
 from .core import exposure as EX
 from .core import export as OUT
 from .core import failure_probability as FP
+from .core import gee as GEE
 from .core import hazard as HZ
 from .core import reservoir as RES
 from .core import sph as SPH
@@ -91,8 +93,20 @@ class Scenario:
     baseline_window: Optional[Tuple[str, str]] = None   # pre-event, benchmark mode
     validation_mode: str = "context"
     satellite_basemap: bool = True
-    population_product: str = "1km"
+    # WorldPop 100 m constrained, not 1 km aggregated: a 1 km cell assigned
+    # uniformly is coarser than the model grid, so a flood edge slices a whole
+    # square kilometre of population proportionally. `fetch_population` falls
+    # back to the 1 km product, and records which one it used, if the
+    # constrained raster is unavailable for the country.
+    population_product: str = "100m"
     iso3: str = "IND"
+    # Set when the domain was derived from a dam coordinate rather than
+    # supplied, so the manifest records that it is a screening box.
+    domain_note: Optional[str] = None
+    # Catalogue coordinate of the dam, when it came from the national
+    # index. Used to resolve it in OSM when the two spell the name
+    # differently, which they often do.
+    dam_lonlat: Optional[Tuple[float, float]] = None
     asset_values: HZ.AssetValues = field(default_factory=HZ.AssetValues)
 
     def to_dict(self) -> dict:
@@ -150,12 +164,12 @@ def run_scenario(scn: Scenario, run_id: Optional[str] = None,
 
     _log(progress, "ingest", "Locating dam in OpenStreetMap", 12)
     dams = ds.fetch_dams(scn.bbox_ll)
-    match = [d for d in dams if scn.dam_name.lower() in d["name"].lower()]
-    if not match:
+    dam, how = _resolve_dam(dams, scn.dam_name, scn.dam_lonlat)
+    if dam is None:
         raise ds.SourceUnavailable(
             f"No OSM dam matching {scn.dam_name!r} inside {scn.bbox_ll}. "
-            f"Found: {[d['name'] for d in dams]}")
-    dam = match[0]
+            f"Found: {sorted({d['name'] for d in dams})}")
+    manifest["data_sources"]["dam_match"] = how
     dossier = ds.dam_dossier(dam)
     manifest["dam"] = dossier
     manifest["data_sources"]["dam"] = dossier["sources"]
@@ -163,6 +177,15 @@ def run_scenario(scn: Scenario, run_id: Optional[str] = None,
     _log(progress, "ingest", "Fetching OSM exposure + WorldPop", 16)
     exposure = ds.fetch_exposure_osm(scn.bbox_ll)
     roads_geom = ds.fetch_roads_geom(scn.bbox_ll)
+    try:
+        footprints = ds.fetch_building_footprints(scn.bbox_ll)
+        manifest["data_sources"]["building_footprints"] = (
+            f"OpenStreetMap building polygons via Overpass (ODbL), "
+            f"{len(footprints)} footprints with computed area")
+    except Exception as exc:                           # noqa: BLE001
+        footprints = {}
+        manifest["data_sources"]["building_footprints"] = f"unavailable: {exc}"
+        _log(progress, "ingest", f"Building footprints unavailable: {exc}", 16)
     pop, pop_src = ds.fetch_population(scn.bbox_ll, dem, iso=scn.iso3,
                                        product=scn.population_product)
     manifest["data_sources"]["population"] = pop_src
@@ -270,6 +293,15 @@ def run_scenario(scn: Scenario, run_id: Optional[str] = None,
                            t_end=scn.breach_hours * 3600.0)
     results["breach"] = br.to_dict()
     manifest["qc"]["breach"] = br.checks
+    # The empirical spread across every applicable regression. For a structure
+    # outside any single regression's fitted range this band, not a point
+    # value, is the defensible statement of breach-parameter uncertainty.
+    results["breach"]["regression_ensemble"] = B.regression_ensemble(
+        volume_m3=reservoir.volume(h_init), h_dam=crest - reservoir.bed,
+        h_water=h_init - geom.invert, h_breach=geom.height,
+        mode=scn.failure_mode,
+        dam_type="core" if scn.barrier_type == "engineered" else "homogeneous",
+        erodibility="medium" if scn.barrier_type == "engineered" else "high")
 
     OUT.export_hydrograph_csv(out / "tables" / "breach_hydrograph.csv", br.t,
                               {"Q_m3s": br.q, "reservoir_level_m": br.h_res,
@@ -495,7 +527,8 @@ def run_scenario(scn: Scenario, run_id: Optional[str] = None,
                                     primary.h_max, hz.hazard_class,
                                     primary.arrival_s)
     buildings = EX.building_impact(dem_c, exposure["buildings"], primary.h_max,
-                                   hz.hazard_class, hz.dv)
+                                   hz.hazard_class, hz.dv,
+                                   footprints=footprints, iso3=scn.iso3)
     roads = EX.road_impact(dem_c, roads_geom, wet)
     lc_impact = EX.landcover_impact(dem_c.landcover, wet, dem_c.cell_area)
     pop_impact = EX.population_impact(pop, hz.hazard_class, primary.h_max)
@@ -512,7 +545,16 @@ def run_scenario(scn: Scenario, run_id: Optional[str] = None,
         manifest["data_sources"]["districts"] = f"unavailable: {exc}"
 
     evac = EX.evacuation_timeline(settlements)
-    losses = EX.estimate_losses(buildings, roads, lc_impact, scn.asset_values)
+    # The JRC road and cropland curves are depth dependent, so they need a
+    # representative depth rather than a flat partial-damage factor.  The mean
+    # depth over inundated cells is the like-for-like quantity: both layers are
+    # scored over the same wetted footprint.
+    mean_wet_depth = (float(np.nanmean(primary.h_max[wet]))
+                      if wet.any() else None)
+    losses = EX.estimate_losses(buildings, roads, lc_impact,
+                                values=scn.asset_values, iso3=scn.iso3,
+                                road_depth_m=mean_wet_depth)
+    manifest["data_sources"]["damage_model"] = DMG.citation()
 
     impact = EX.ImpactReport(
         population=pop_impact, settlements=settlements, buildings=buildings,
@@ -746,6 +788,23 @@ def run_scenario(scn: Scenario, run_id: Optional[str] = None,
 
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2, default=str))
     (out / "results.json").write_text(json.dumps(results, indent=2, default=str))
+
+    # Earth Engine hand-off. Written last because it reads the two JSON files
+    # back; it needs no credentials, so it must never be able to fail a run.
+    try:
+        script = GEE.export_script(out)
+        results["earthengine"] = {
+            "script": str(script.relative_to(out)),
+            "geojson": "earthengine/flood_extent_ee.geojson",
+            "how": ("Paste the script into code.earthengine.google.com. The "
+                    "flood extent is embedded, so no asset upload and no "
+                    "extra credentials are needed."),
+        }
+        (out / "results.json").write_text(
+            json.dumps(results, indent=2, default=str))
+    except Exception as exc:                           # noqa: BLE001
+        results["earthengine"] = {"error": f"{type(exc).__name__}: {exc}"}
+
     _log(progress, "done", f"Run complete in {manifest['timings']['total_s']}s", 100)
 
     return {"run_id": run_id, "dir": str(out), "manifest": manifest,
@@ -755,6 +814,75 @@ def run_scenario(scn: Scenario, run_id: Optional[str] = None,
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+# Words that carry no identifying information in a dam name. Wikidata and OSM
+# routinely disagree on them ("Idukki Dam" vs "Idukki Arch Dam") and on
+# transliteration ("Cheruthoni" vs "Cheruthony"), so an exact substring match
+# between the two catalogues fails far more often than it should.
+_DAM_STOPWORDS = {"dam", "the", "of", "reservoir", "barrage", "weir", "bund",
+                  "anicut", "arch", "project", "hydroelectric", "plant",
+                  "saddle", "main", "major", "left", "right", "bank"}
+
+
+def _dam_tokens(name: str) -> set:
+    return {w for w in ''.join(c if c.isalnum() else ' '
+                               for c in name.lower()).split()
+            if w and w not in _DAM_STOPWORDS}
+
+
+def _resolve_dam(dams: List[dict], name: str,
+                 lonlat: Optional[Sequence[float]] = None
+                 ) -> Tuple[Optional[dict], str]:
+    """Find the OSM dam a scenario means, by name then by coordinate.
+
+    Name first, because a named match is unambiguous. But a dam picked from the
+    Wikidata index arrives with a Wikidata spelling, and OSM may hold another
+    ("Cheruthoni" / "Cheruthony") or a longer official one. So: exact substring,
+    then distinctive-token overlap, then -- when the caller knows where the dam
+    is -- simply the nearest mapped dam to that coordinate, which is the most
+    reliable signal of the three. Which route was used is recorded.
+    """
+    if not dams:
+        return None, "no dams mapped in domain"
+
+    needle = (name or "").strip().lower()
+    if needle:
+        exact = [d for d in dams if needle in d["name"].lower()]
+        if exact:
+            return exact[0], f"exact name substring {name!r}"
+
+        want = _dam_tokens(name)
+        if want:
+            scored = []
+            for d in dams:
+                have = _dam_tokens(d["name"])
+                if want & have:
+                    scored.append((len(want & have), d["crest_length_m"], d))
+            if scored:
+                scored.sort(key=lambda s: (-s[0], -s[1]))
+                best = scored[0][2]
+                return best, (f"token match {sorted(want)} -> OSM "
+                              f"{best['name']!r} (names differ between "
+                              f"catalogues)")
+
+    if lonlat and len(lonlat) == 2:
+        lon0, lat0 = float(lonlat[0]), float(lonlat[1])
+        best = min(dams, key=lambda d: (d["center_ll"][0] - lon0) ** 2
+                   + (d["center_ll"][1] - lat0) ** 2)
+        dx = (best["center_ll"][0] - lon0) * 111_320.0 * math.cos(
+            math.radians(lat0))
+        dy = (best["center_ll"][1] - lat0) * 110_540.0
+        dist_km = math.hypot(dx, dy) / 1000.0
+        # Beyond a few km it is a different structure, not a spelling variant.
+        if dist_km <= 5.0:
+            return best, (f"nearest mapped dam to the catalogue coordinate: "
+                          f"OSM {best['name']!r} at {dist_km:.2f} km "
+                          f"(name {name!r} did not match)")
+        return None, (f"nearest mapped dam {best['name']!r} is {dist_km:.1f} km "
+                      f"from the catalogue coordinate - too far to assume "
+                      f"they are the same structure")
+
+    return None, f"no name or coordinate match for {name!r}"
 
 def _dam_cells(dem: D.DEM, dam: dict) -> Tuple[Tuple[int, int], np.ndarray]:
     """Map the OSM dam way onto grid cells; return (centre_rc, line_cells)."""

@@ -15,6 +15,7 @@ import numpy as np
 import pytest
 
 from damburst.core import breach as B
+from damburst.core import damage as DMG
 from damburst.core import exposure as EX
 from damburst.core import hazard as HZ
 from damburst.core import reservoir as RES
@@ -239,71 +240,104 @@ def test_shape_exponent_records_when_it_was_defaulted():
 # AUDIT SS12, SS15, SS16 -- loss accounting
 # ---------------------------------------------------------------------------
 
-def test_road_damage_factor_is_a_declared_asset_value():
-    """It used to be a 0.35 literal producing ~96% of the reported loss."""
-    av = HZ.AssetValues()
-    d = av.to_dict()
-    assert "road_partial_damage_factor" in d
-    assert d["road_partial_damage_factor"] == av.road_partial_damage_factor
+def test_no_literal_buried_in_the_loss_code_scales_the_total():
+    """AUDIT SS12, re-pointed.
+
+    The finding was that a hardcoded 0.35 inside `estimate_losses` produced
+    ~96% of the reported rupee total while the module promised every figure
+    was tagged with the rate that produced it. The audit branch fixed this by
+    promoting the factor into `AssetValues`. `damage.py` then superseded that
+    entirely: road damage is now the JRC INFRASTRUCTURE depth-damage curve
+    evaluated at the sampled depth, which is both sourced and depth dependent,
+    and the flat factor is gone.
+
+    So the test no longer looks for the factor. It asserts the property the
+    finding was really about: every line of the loss breakdown must carry the
+    source of the number that produced it.
+    """
+    assert not hasattr(HZ.AssetValues(), "road_partial_damage_factor"),         "the flat factor was superseded by a sourced curve; do not reinstate it"
+
+    out = EX.estimate_losses(
+        {"exposed": 5, "by_asset_class": []},
+        {"total_inundated_km": 120.0}, {}, None, iso3="IND", road_depth_m=1.5)
+    lines = out.get("line_items") or []
+    assert lines, "the loss breakdown must be itemised, not a single figure"
+    for ln in lines:
+        assert ln.get("source"), f"line item {ln.get('component')} has no source"
+        assert "unit_value" in ln and "damage_fraction" in ln
 
 
-def test_road_damage_factor_actually_scales_the_loss():
+def test_road_loss_is_depth_dependent_not_a_flat_fraction():
+    """The replacement for the 0.35 must actually vary with depth."""
     roads = {"total_inundated_km": 100.0}
-    base = EX.estimate_losses({}, roads, {}, HZ.AssetValues())
-    half = EX.estimate_losses(
-        {}, roads, {}, HZ.AssetValues(road_partial_damage_factor=0.175))
-    assert half["roads"] == pytest.approx(base["roads"] / 2.0)
-    assert base["components"]["road_partial_damage_factor"] == 0.35
+    shallow = EX.estimate_losses({}, roads, {}, None, iso3="IND", road_depth_m=0.5)
+    deep = EX.estimate_losses({}, roads, {}, None, iso3="IND", road_depth_m=4.0)
+    assert deep["roads"] > shallow["roads"] > 0,         "road damage must rise with depth; a flat factor would give equal values"
 
 
-def test_losses_report_the_dominant_component():
-    out = EX.estimate_losses({"exposed": 5, "mean_damage_fraction": 1.0},
-                             {"total_inundated_km": 120.0}, {},
-                             HZ.AssetValues())
-    assert sum(out["percent_of_total"].values()) == pytest.approx(100.0, abs=0.2)
-    assert "roads" in out["dominant_component_note"]
+def test_asset_classes_get_different_unit_values():
+    """AUDIT SS15, re-pointed.
+
+    The finding was that `commercial_per_building` was printed as if used and
+    never read - everything was priced as a house. `damage.max_damage_set`
+    now carries a published rate per asset class.
+    """
+    rates = DMG.max_damage_set("IND")
+    for cls in ("residential", "commercial", "industrial"):
+        assert cls in rates, cls
+        assert rates[cls].value > 0
+        assert rates[cls].source, f"{cls} rate has no provenance"
+    assert len({rates[c].value for c in
+                ("residential", "commercial", "industrial")}) > 1,         "asset classes must not all share one unit value"
 
 
-def test_commercial_unit_value_is_actually_used():
-    """SS15: commercial_per_building was reported as used but never read."""
-    av = HZ.AssetValues()
-    buildings = {
-        "exposed": 2, "mean_damage_fraction": 1.0,
-        "by_occupancy": [
-            {"occupancy": "residential", "rate_key": "residential",
-             "buildings": 1, "mean_damage_fraction": 1.0},
-            {"occupancy": "commercial", "rate_key": "commercial",
-             "buildings": 1, "mean_damage_fraction": 1.0},
-        ],
-    }
-    out = EX.estimate_losses(buildings, {}, {}, av)
-    assert out["buildings"] == pytest.approx(
-        av.residential_per_building + av.commercial_per_building)
-
-
-@pytest.mark.parametrize("tag,curve,rate", [
-    (None, "residential", "residential"),
-    ("yes", "residential", "residential"),
-    ("house", "residential", "residential"),
-    ("commercial", "commercial", "commercial"),
-    ("warehouse", "industrial", "commercial"),
-    ("hospital", "infrastructure", "commercial"),
-    ("barn", "agriculture", "residential"),
-    ("some_unmapped_value", "residential", "residential"),
+@pytest.mark.parametrize("tags,cls", [
+    (None, "residential"),
+    ({"building": "yes"}, "residential"),
+    ({"building": "house"}, "residential"),
+    ({"building": "commercial"}, "commercial"),
+    ({"building": "warehouse"}, "industrial"),
+    ({"building": "some_unmapped_value"}, "residential"),
 ])
-def test_building_occupancy_classification(tag, curve, rate):
-    assert HZ.classify_building(tag) == (curve, rate)
+def test_building_occupancy_classification(tags, cls):
+    """AUDIT SS15. Classification lives in damage.py and reports its basis."""
+    got, basis = DMG.classify_building(tags)
+    assert got == cls
+    assert basis, "every classification must say what it was based on"
 
 
-def test_damage_curves_carry_a_citation():
-    """SS16: typed-in tables must say where they came from."""
-    assert "EUR 28552" in HZ.DD_SOURCE
-    assert "TRANSCRIBED" in HZ.DD_SOURCE
-    assert len(HZ.DD_DEPTHS) == len(HZ.DD_CURVES["residential"])
+def test_only_one_building_classifier_exists():
+    """AUDIT SS10 in spirit: one mapping, one implementation.
+
+    The audit branch grew a second copy of this table in hazard.py; two
+    implementations of one mapping is the duplication the audit complained
+    about elsewhere.
+    """
+    assert not hasattr(HZ, "classify_building"),         "hazard.classify_building duplicates damage.classify_building"
+    assert not hasattr(HZ, "BUILDING_CLASS_MAP")
+
+
+def test_damage_curves_match_the_published_source():
+    """AUDIT SS16, and the reason it needed re-pointing.
+
+    The original finding was that the curves were typed-in literals with no
+    traceable source, and the audit branch "fixed" it by adding a confident
+    citation - to numbers that turn out not to match the published tables
+    (residential read 0.58 at 1 m against the published 0.49). A citation on a
+    wrong number is worse than no citation, because it makes it look checked.
+
+    The curves are now read from the extracted JRC database, so this test
+    asserts the VALUES, not the presence of a citation.
+    """
+    c = DMG.curve("residential", "IND")
+    assert c.factor(1.0) == pytest.approx(0.49, abs=1e-6),         "residential damage at 1 m must match the published JRC Asia table"
+    assert c.factor(0.0) == pytest.approx(0.0)
+    assert HZ.DD_SOURCE and "Huizinga" in HZ.DD_SOURCE
     for name, curve in HZ.DD_CURVES.items():
-        assert curve[0] == 0.0, name
-        assert np.all(np.diff(curve) >= 0), f"{name} must be monotonic"
-        assert curve[-1] <= 1.0, name
+        arr = np.asarray(curve, dtype=float)
+        assert arr[0] == 0.0, name
+        assert np.all(np.diff(arr) >= -1e-12), f"{name} must be monotonic"
+        assert arr[-1] <= 1.0 + 1e-12, name
 
 
 # ---------------------------------------------------------------------------
@@ -576,7 +610,7 @@ def test_cli_exposes_the_previously_unreachable_flags():
     help_text = buf.getvalue()
     for flag in ("--seed-method", "--inflow-m3s", "--channel-burn-m",
                  "--no-tailwater", "--froude-max", "--baseline-window",
-                 "--road-damage-factor", "--value-residential"):
+                 "--value-residential"):
         assert flag in help_text, f"{flag} missing from the CLI"
 
 
@@ -591,6 +625,6 @@ def test_api_applies_asset_value_overrides():
     from damburst.api.main import RunRequest, _build_scenario
     scn = _build_scenario(RunRequest(
         preset="tehri", seed_method="macdonald",
-        asset_values={"road_partial_damage_factor": 0.2}))
+        asset_values={"residential_per_building": 1_800_000.0}))
     assert scn.seed_method == "macdonald"
-    assert scn.asset_values.road_partial_damage_factor == 0.2
+    assert scn.asset_values.residential_per_building == 1_800_000.0

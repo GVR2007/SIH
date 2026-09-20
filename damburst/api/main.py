@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import io
 import json
+import re
 import threading
 import time
 import traceback
@@ -25,6 +26,8 @@ from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
+from ..core import datasources as ds
+from ..core.hazard import AssetValues
 from ..pipeline import RUNS, ROOT, Scenario, run_scenario
 from ..scenarios import PRESETS, preset_scenario
 
@@ -96,7 +99,8 @@ class RunRequest(BaseModel):
     asset_values: Optional[Dict[str, Any]] = Field(
         None, description="any of residential_per_building, "
                           "commercial_per_building, road_per_km, "
-                          "cropland_per_hectare, road_partial_damage_factor")
+                          "cropland_per_hectare")
+    country: Optional[str] = None
 
 
 # ---------------------------------------------------------------------------
@@ -112,6 +116,47 @@ def health():
 @app.get("/api/presets")
 def presets():
     return {"presets": [{"key": k, **v} for k, v in PRESETS.items()]}
+
+
+@app.get("/api/dams")
+def dam_index(country: str = "IND", q: str = "", limit: int = 400,
+              min_height_m: float = 0.0):
+    """Every dam in a country, from the Wikidata national index.
+
+    The presets are five worked examples, not the extent of what the framework
+    can model: the DEM, land cover, population and imagery are all fetched on
+    demand for whatever domain a dam implies, so any dam in this list is
+    runnable.
+    """
+    try:
+        idx = ds.fetch_dam_index(country)
+    except Exception as exc:                           # noqa: BLE001
+        raise HTTPException(503, f"dam index unavailable: {exc}")
+    if q:
+        needle = q.lower()
+        idx = [d for d in idx
+               if needle in (d["name"] or "").lower()
+               or needle in (d.get("admin") or "").lower()
+               or needle in (d.get("river") or "").lower()]
+    if min_height_m:
+        idx = [d for d in idx if (d.get("height_m") or 0) >= min_height_m]
+    return {"country": country.upper(), "total": len(idx),
+            "dams": idx[:max(1, limit)],
+            "source": "Wikidata Query Service (CC0)"}
+
+
+@app.get("/api/dams/near")
+def dams_near(lat: float, lon: float, radius_deg: float = 0.25,
+              country: str = "IND"):
+    """Dams around a clicked point, nearest first, Wikidata plus OSM."""
+    try:
+        found = ds.dams_near(lat, lon, radius_deg, country)
+    except Exception as exc:                           # noqa: BLE001
+        raise HTTPException(503, f"dam lookup failed: {exc}")
+    for d in found:
+        d["suggested_bbox_ll"], d["bbox_note"] = ds.auto_bbox(
+            d["lat"], d["lon"], d.get("height_m"))
+    return {"count": len(found), "dams": found}
 
 
 @app.post("/api/run")
@@ -310,14 +355,40 @@ if WEB.exists():
 
 # ---------------------------------------------------------------------------
 
+def _slug(name: str) -> str:
+    """Run-id-safe short name from a dam name."""
+    return re.sub(r"[^a-z0-9]+", "-", name.lower()).strip("-")[:32] or "dam"
+
+
 def _build_scenario(req: RunRequest) -> Scenario:
     if req.preset:
         scn = preset_scenario(req.preset)
-    else:
-        if not (req.bbox_ll and req.dam_name and req.name):
-            raise ValueError("custom runs need name, bbox_ll and dam_name")
+    elif req.bbox_ll and req.dam_name and req.name:
         scn = Scenario(name=req.name, bbox_ll=tuple(req.bbox_ll),
                        dam_name=req.dam_name)
+    elif req.dam_name:
+        # Dam name alone: look it up in the national index and derive a
+        # screening domain from its published height. This is what makes every
+        # dam in the country runnable without the caller hand-picking a box.
+        match = None
+        for d in ds.fetch_dam_index(req.country or "IND"):
+            if d["name"].lower() == req.dam_name.strip().lower():
+                match = d
+                break
+        if match is None:
+            raise ValueError(
+                f"{req.dam_name!r} is not in the {req.country or 'IND'} dam "
+                f"index. Supply bbox_ll explicitly, or query /api/dams?q= to "
+                f"find the exact name.")
+        bbox, note = ds.auto_bbox(match["lat"], match["lon"],
+                                  match.get("height_m"))
+        name = req.name or _slug(match["name"])
+        scn = Scenario(name=name, bbox_ll=bbox, dam_name=match["name"],
+                       domain_note=note,
+                       dam_lonlat=(match["lon"], match["lat"]))
+    else:
+        raise ValueError("a run needs a preset, a dam_name, or "
+                         "name + bbox_ll + dam_name")
 
     overrides = {}
     for f in ("barrier_type", "failure_mode", "growth_law", "loading", "res_m",
@@ -348,7 +419,7 @@ def _build_scenario(req: RunRequest) -> Scenario:
     if req.asset_values:
         allowed = {"currency", "residential_per_building",
                    "commercial_per_building", "road_per_km",
-                   "cropland_per_hectare", "road_partial_damage_factor"}
+                   "cropland_per_hectare"}
         bad = set(req.asset_values) - allowed
         if bad:
             raise ValueError(f"unknown asset_values keys: {sorted(bad)}; "

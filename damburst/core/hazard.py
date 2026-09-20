@@ -55,81 +55,38 @@ DEBRIS_FACTOR = {
     "open": 0.0,
 }
 
-# --- JRC (Huizinga et al. 2017) Asia depth-damage functions ----------------
+# --- depth-damage functions -----------------------------------------------
+# These are loaded from the published JRC database rather than written out
+# here.  An earlier version of this file carried a hand-entered table under a
+# "JRC Huizinga et al. (2017) Asia" heading whose values did not match the
+# published tables (residential read 0.58 at 1 m against the published 0.49,
+# and so on for every class except commerce), which over-predicted damage at
+# every depth while citing a source that said otherwise.  `damage.py` reads
+# `data/reference/jrc_flood_damage.json`, extracted from the source PDF with
+# its citation, so the numbers can be checked against the report.
 #
-# PROVENANCE.  These are the damage-factor ordinates of the JRC global flood
-# depth-damage functions for ASIA, transcribed from the published annex of
+# NOTE for anyone reading the branch history: the audit branch independently
+# flagged these ordinates as untraceable literals and "fixed" them by adding a
+# confident citation to the very numbers that turn out to be wrong, which made
+# them look verified. Loading them from the extracted source is the correct
+# fix and supersedes that one entirely.
+from . import damage as _damage                                   # noqa: E402
+
+DD_DEPTHS = np.array(_damage.curve("residential", "IND").depth_m)
+DD_CURVES = {c: _damage.curve(c, "IND").damage_factor
+             for c in _damage.ASSET_CLASSES}
+
+#: Retained so callers that record provenance keep working. It now reports the
+#: extracted database's own citation rather than asserting a hand transcription.
+DD_SOURCE = _damage.citation()
+
+# Building occupancy classification lives in `damage.py`, which maps the full
+# OSM tag set onto the JRC asset classes and reports the basis of each match.
+# The audit branch grew a second, cruder copy of the same table here; keeping
+# two implementations of one mapping is exactly the duplication that branch
+# complained about elsewhere, so this one is gone. Use:
 #
-#   Huizinga, J., de Moel, H., Szewczyk, W. (2017) "Global flood depth-damage
-#   functions: Methodology and the database with guidelines."  JRC Technical
-#   Report EUR 28552 EN, Publications Office of the European Union.
-#   doi:10.2760/16510.  Continental curves, Asia (Annex, damage-factor tables
-#   per occupancy class).
-#
-# They are TRANSCRIBED from that report, not parsed from a machine-readable
-# release.  A reviewer wanting to re-derive them should download the JRC
-# database and replace this block; nothing else in the module depends on its
-# shape, only on `DD_DEPTHS` and `DD_CURVES` being co-indexed.
-DD_SOURCE = ("JRC EUR 28552 EN (Huizinga, de Moel & Szewczyk 2017), Asia "
-             "continental depth-damage curves, TRANSCRIBED from the published "
-             "annex tables (doi:10.2760/16510) - not machine-read")
-DD_DEPTHS = np.array([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0])
-DD_CURVES = {
-    "residential":    np.array([0.00, 0.35, 0.58, 0.73, 0.84, 0.95, 0.99, 1.00, 1.00]),
-    "commercial":     np.array([0.00, 0.38, 0.54, 0.66, 0.76, 0.88, 0.94, 0.98, 1.00]),
-    "industrial":     np.array([0.00, 0.32, 0.51, 0.64, 0.74, 0.86, 0.93, 0.97, 1.00]),
-    "infrastructure": np.array([0.00, 0.15, 0.30, 0.45, 0.55, 0.75, 0.90, 1.00, 1.00]),
-    "agriculture":    np.array([0.00, 0.18, 0.37, 0.53, 0.66, 0.85, 0.96, 1.00, 1.00]),
-}
-
-# OSM `building=*` value -> (JRC damage curve, unit-rate key).  Anything not
-# listed falls back to residential, which is what the overwhelming majority of
-# bare `building=yes` features in rural India actually are.  The fallback is
-# counted and reported so the share of guessed occupancies is visible.
-BUILDING_CLASS_MAP = {
-    "residential": ("residential", "residential"),
-    "house": ("residential", "residential"),
-    "detached": ("residential", "residential"),
-    "semidetached_house": ("residential", "residential"),
-    "apartments": ("residential", "residential"),
-    "hut": ("residential", "residential"),
-    "bungalow": ("residential", "residential"),
-    "dormitory": ("residential", "residential"),
-    "commercial": ("commercial", "commercial"),
-    "retail": ("commercial", "commercial"),
-    "shop": ("commercial", "commercial"),
-    "office": ("commercial", "commercial"),
-    "hotel": ("commercial", "commercial"),
-    "supermarket": ("commercial", "commercial"),
-    "kiosk": ("commercial", "commercial"),
-    "industrial": ("industrial", "commercial"),
-    "warehouse": ("industrial", "commercial"),
-    "factory": ("industrial", "commercial"),
-    "school": ("infrastructure", "commercial"),
-    "college": ("infrastructure", "commercial"),
-    "university": ("infrastructure", "commercial"),
-    "hospital": ("infrastructure", "commercial"),
-    "civic": ("infrastructure", "commercial"),
-    "public": ("infrastructure", "commercial"),
-    "government": ("infrastructure", "commercial"),
-    "train_station": ("infrastructure", "commercial"),
-    "barn": ("agriculture", "residential"),
-    "farm": ("agriculture", "residential"),
-    "farm_auxiliary": ("agriculture", "residential"),
-    "greenhouse": ("agriculture", "residential"),
-    "cowshed": ("agriculture", "residential"),
-}
-
-
-def classify_building(tag: Optional[str]) -> Tuple[str, str]:
-    """OSM `building=*` value -> (JRC damage curve, unit-rate key).
-
-    Returns the residential pair for an unmapped or missing tag; callers are
-    expected to count how often that happens and report it.
-    """
-    if not tag:
-        return "residential", "residential"
-    return BUILDING_CLASS_MAP.get(str(tag).lower(), ("residential", "residential"))
+#     from .damage import classify_building
 
 
 @dataclass
@@ -150,13 +107,14 @@ class AssetValues:
     commercial_per_building: float = 3_500_000.0
     road_per_km: float = 25_000_000.0
     cropland_per_hectare: float = 150_000.0
-    # Roads are not written off at their full replacement cost when inundated:
-    # pavement, formation and structures fail at very different rates and much
-    # of a flooded carriageway is recoverable.  There is no depth-damage curve
-    # for Indian road classes in the JRC set, so this is a flat judgement
-    # factor -- and it is by far the largest single lever on the reported
-    # total, which is exactly why it belongs here and not in the code.
-    road_partial_damage_factor: float = 0.35
+    # NOTE. There used to be a `road_partial_damage_factor` here, promoted out
+    # of the loss code by the audit branch because a flat 0.35 buried in
+    # `estimate_losses` was silently producing ~96% of the reported total.
+    # `exposure.estimate_losses` now evaluates the JRC INFRASTRUCTURE
+    # depth-damage curve at the sampled depth instead, which is both sourced
+    # and depth dependent, so the flat factor has no caller. Declaring a knob
+    # that no longer does anything would be the same failure the audit
+    # complained about, so it is removed rather than left dangling.
     source: str = ("USER-SUPPLIED ASSUMPTION - not measured data. "
                    "Replace with audited schedule-of-rates for the study area.")
 
@@ -170,7 +128,6 @@ class AssetValues:
             "residential_per_building": self.residential_per_building,
             "commercial_per_building": self.commercial_per_building,
             "road_per_km": self.road_per_km,
-            "road_partial_damage_factor": self.road_partial_damage_factor,
             "cropland_per_hectare": self.cropland_per_hectare,
             "_provenance": self.source,
         }

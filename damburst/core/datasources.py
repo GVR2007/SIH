@@ -24,6 +24,7 @@ import hashlib
 import json
 import math
 import os
+import re
 import time
 import urllib.parse
 import urllib.request
@@ -489,10 +490,36 @@ def fetch_population(bbox_ll: Sequence[float], dem: DEM, iso: str = "IND",
     product and is only fetched on request.  Counts are rescaled by the cell-area
     ratio so the total population in the domain is preserved.
     """
-    tmpl = WORLDPOP_1KM if product == "1km" else WORLDPOP_100M
-    url = tmpl.format(iso=iso, iso_l=iso.lower())
-    local = CACHE_DIR / Path(url).name
-    download_file(url, local)
+    # The 100 m constrained product is the right resolution to intersect with a
+    # 60-180 m model grid, but it is a ~500 MB national raster. Making that a
+    # blocking first-run download is a bad default for a tool people demo, so
+    # "auto" uses 100 m only when it is already cached and otherwise runs on
+    # 1 km immediately, saying so in the provenance string. Ask for "100m"
+    # explicitly to accept the download.
+    if product == "auto":
+        cached = CACHE_DIR / Path(
+            WORLDPOP_100M.format(iso=iso, iso_l=iso.lower())).name
+        product = "100m" if (cached.exists() and cached.stat().st_size > 0) \
+            else "1km"
+
+    # Fall back rather than fail the whole run, and say which product actually
+    # got used in the returned provenance string.
+    order = (["100m", "1km"] if product == "100m" else ["1km"])
+    errors = []
+    for attempt in order:
+        tmpl = WORLDPOP_1KM if attempt == "1km" else WORLDPOP_100M
+        url = tmpl.format(iso=iso, iso_l=iso.lower())
+        local = CACHE_DIR / Path(url).name
+        try:
+            download_file(url, local)
+            product = attempt
+            break
+        except Exception as exc:                       # noqa: BLE001
+            errors.append(f"{attempt}: {exc}")
+    else:
+        raise SourceUnavailable(
+            f"No WorldPop product available for {iso}. Tried: "
+            + "; ".join(errors))
 
     grid = Grid(crs=dem.crs, transform=dem.transform, width=dem.nx,
                 height=dem.ny, res=dem.dx)
@@ -594,6 +621,64 @@ out geom;"""
              "waterway": el.get("tags", {}).get("waterway"),
              "coords_ll": [[p["lon"], p["lat"]] for p in el.get("geometry", [])]}
             for el in j["elements"] if el.get("geometry")]
+
+
+def fetch_building_footprints(bbox_ll: Sequence[float]) -> Dict[int, float]:
+    """Building footprint areas in m2, keyed by OSM way id.
+
+    The JRC maximum-damage values are per square metre of floor area, so a
+    building count alone cannot be converted to currency.  This is a separate
+    Overpass call because it needs `out geom` -- pulling full geometry for
+    every element in the exposure query would multiply that response for no
+    benefit to the settlement/facility/road layers.
+    """
+    # `out geom` on every building in a large, densely-mapped domain is the
+    # heaviest request this framework makes -- hundreds of MB over parts of
+    # Kerala or the Gangetic plain. Refuse rather than stall: the caller treats
+    # this as optional and falls back to counts without floor area.
+    west, south, east, north = bbox_ll
+    area_km2 = (abs(east - west) * 111.0 * math.cos(math.radians((south + north) / 2))
+                * abs(north - south) * 111.0)
+    if area_km2 > 12_000:
+        raise SourceUnavailable(
+            f"Domain is {area_km2:,.0f} km2; a full building-footprint query "
+            f"over an area this size can return hundreds of MB from Overpass. "
+            f"Narrow the bbox to get floor-area-based losses.")
+
+    bb = _bbox_str(bbox_ll)
+    q = f"""[out:json][timeout:240];
+way["building"]({bb});
+out geom;"""
+    j = overpass(q, "osm_building_geom")
+    out: Dict[int, float] = {}
+    for el in j["elements"]:
+        g = el.get("geometry")
+        if not g or len(g) < 4:
+            continue
+        area = _ring_area_m2([(p["lon"], p["lat"]) for p in g])
+        if area > 0:
+            out[int(el["id"])] = area
+    return out
+
+
+def _ring_area_m2(coords: Sequence[Tuple[float, float]]) -> float:
+    """Planar shoelace area of a small lon/lat ring, metres squared.
+
+    Over a building footprint the local scale factor is effectively constant,
+    so a local equirectangular projection about the ring centroid is accurate
+    to far better than the precision of the OSM geometry itself.
+    """
+    if len(coords) < 4:
+        return 0.0
+    lat0 = math.radians(sum(c[1] for c in coords) / len(coords))
+    kx = 111320.0 * math.cos(lat0)
+    ky = 110540.0
+    xs = [c[0] * kx for c in coords]
+    ys = [c[1] * ky for c in coords]
+    s = 0.0
+    for i in range(len(coords) - 1):
+        s += xs[i] * ys[i + 1] - xs[i + 1] * ys[i]
+    return abs(s) * 0.5
 
 
 def fetch_roads_geom(bbox_ll: Sequence[float]) -> List[dict]:
@@ -715,6 +800,185 @@ def wikidata_entity(qid: str) -> dict:
             out[key] = dv
     cache.write_text(json.dumps(out))
     return out
+
+
+WDQS = "https://query.wikidata.org/sparql"
+
+# Q12323 = dam.  P17 country, P625 coordinate, P2048 height, P2234 reservoir
+# volume, P4614 drainage basin, P131 administrative unit.
+_DAM_INDEX_SPARQL = """
+SELECT ?dam ?damLabel ?coord ?height ?cap ?riverLabel ?admLabel WHERE {
+  ?dam wdt:P31/wdt:P279* wd:Q12323 .
+  ?dam wdt:P17 wd:%(country)s .
+  ?dam wdt:P625 ?coord .
+  OPTIONAL { ?dam wdt:P2048 ?height }
+  OPTIONAL { ?dam wdt:P2234 ?cap }
+  OPTIONAL { ?dam wdt:P4614 ?river }
+  OPTIONAL { ?dam wdt:P131 ?adm }
+  SERVICE wikibase:label { bd:serviceParam wikibase:language "en" }
+}
+"""
+
+# Wikidata country items for the countries the damage module can price.
+WD_COUNTRY = {"IND": "Q668", "CHN": "Q148", "USA": "Q30", "BRA": "Q155",
+              "PAK": "Q843", "NPL": "Q837", "BGD": "Q902", "LKA": "Q854",
+              "VNM": "Q881", "IDN": "Q252", "ZAF": "Q258", "GBR": "Q145"}
+
+
+def fetch_dam_index(iso3: str = "IND") -> List[dict]:
+    """Every dam in a country that Wikidata knows the coordinates of.
+
+    This is what makes the framework national rather than a five-preset demo:
+    the DEM, land cover, population and imagery are all fetched on demand for
+    whatever bbox a dam implies, so the only thing that ever limited coverage
+    was knowing where the dams are.
+
+    Wikidata rather than a nationwide Overpass sweep: a country-wide
+    `nwr["waterway"="dam"]` query is a heavy request against a shared public
+    endpoint, while WDQS answers this one in seconds and carries the published
+    height and storage alongside the coordinate.  Use `fetch_dams` for the
+    authoritative mapped geometry once a dam has been picked.
+    """
+    qid = WD_COUNTRY.get(iso3.upper())
+    if qid is None:
+        raise SourceUnavailable(
+            f"No Wikidata country item mapped for {iso3}; add one to "
+            f"WD_COUNTRY. Known: {sorted(WD_COUNTRY)}")
+    cache = _cache_path("damindex", iso3.upper(), ".json")
+    if cache.exists():
+        return json.loads(cache.read_text())
+
+    query = _DAM_INDEX_SPARQL % {"country": qid}
+    url = f"{WDQS}?{urllib.parse.urlencode({'query': query})}"
+    raw = http_get(url, headers={"Accept": "application/sparql-results+json"},
+                   timeout=180)
+    j = json.loads(raw)
+
+    # The tallest dam ever built is Jinping-I at 305 m. Anything above that in
+    # P2048 is a mis-tagged crest ELEVATION, which is a common Wikidata error
+    # for Indian dams -- carry the value through but mark it, so a screening
+    # domain is never sized from a number that cannot be a dam height.
+    tallest_built_m = 305.0
+
+    by_qid: Dict[str, dict] = {}
+    for r in j["results"]["bindings"]:
+        m = re.match(r"Point\(([-\d.]+) ([-\d.]+)\)", r["coord"]["value"])
+        if not m:
+            continue
+        lon, lat = float(m.group(1)), float(m.group(2))
+        name = r["damLabel"]["value"]
+        # An unresolved label comes back as the bare Q-id; those carry no
+        # usable dam name, so they cannot be matched against OSM later.
+        if re.fullmatch(r"Q\d+", name):
+            continue
+        qid = r["dam"]["value"].rsplit("/", 1)[-1]
+        h = _safe_float(r.get("height", {}).get("value"))
+        suspect = bool(h and h > tallest_built_m)
+        rec = {
+            "name": name, "qid": qid, "lon": lon, "lat": lat,
+            "height_m": None if suspect else h,
+            "height_suspect_m": h if suspect else None,
+            "capacity_m3": _safe_float(r.get("cap", {}).get("value")),
+            "river": r.get("riverLabel", {}).get("value"),
+            "admin": r.get("admLabel", {}).get("value"),
+        }
+        # P131 is multi-valued, so WDQS returns one row per administrative
+        # unit. Keep the first and do not let a dam appear several times.
+        prev = by_qid.get(qid)
+        if prev is None:
+            by_qid[qid] = rec
+        elif prev.get("river") is None and rec.get("river"):
+            by_qid[qid] = rec
+
+    out = list(by_qid.values())
+    out.sort(key=lambda d: (-(d["height_m"] or 0), d["name"]))
+    cache.write_text(json.dumps(out))
+    return out
+
+
+def _safe_float(v) -> Optional[float]:
+    try:
+        return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def dams_near(lat: float, lon: float, radius_deg: float = 0.25,
+              iso3: str = "IND") -> List[dict]:
+    """Dams within a box around a point, nearest first.
+
+    Backs "click anywhere on the map and model that dam" -- the national index
+    is consulted first because it is cached and carries published attributes,
+    and OSM is queried as well so a dam that is mapped but not in Wikidata is
+    still offered.
+    """
+    out: List[dict] = []
+    try:
+        for d in fetch_dam_index(iso3):
+            if (abs(d["lat"] - lat) <= radius_deg
+                    and abs(d["lon"] - lon) <= radius_deg):
+                out.append(dict(d, source="Wikidata"))
+    except SourceUnavailable:
+        pass
+
+    bbox = (lon - radius_deg, lat - radius_deg,
+            lon + radius_deg, lat + radius_deg)
+    try:
+        known = {d["name"].lower() for d in out if d.get("name")}
+        for d in fetch_dams(bbox):
+            nm = (d.get("name") or "").strip()
+            if not nm or nm.lower() in known:
+                continue
+            # fetch_dams returns the crest centroid as center_ll, not lon/lat.
+            centre = d.get("center_ll") or []
+            if len(centre) != 2:
+                continue
+            dlon, dlat = centre
+            out.append({"name": nm, "qid": d.get("wikidata"),
+                        "lon": float(dlon), "lat": float(dlat),
+                        "height_m": None, "capacity_m3": None,
+                        "river": None, "admin": None, "source": "OpenStreetMap"})
+    except Exception:                                  # noqa: BLE001
+        pass
+
+    out.sort(key=lambda d: (d["lat"] - lat) ** 2 + (d["lon"] - lon) ** 2)
+    return out
+
+
+def auto_bbox(lat: float, lon: float, height_m: Optional[float] = None,
+              ) -> Tuple[Tuple[float, float, float, float], str]:
+    """A screening domain around a dam, sized from its height.
+
+    SCREENING HEURISTIC, not a derived quantity.  Taller dams release more head
+    and flood further, so the half-extent scales with dam height, calibrated
+    against the hand-picked preset domains:
+
+        Koteshwar   ~60 m    half 0.235 deg
+        Bhakra      226 m    half 0.250 deg
+        Srisailam   145 m    half 0.250 deg
+        Tehri       260 m    half 0.480 deg
+
+    The slope and clamps below reproduce that range.  Do not widen them
+    casually: domain area is the single biggest driver of run cost, and not
+    because of the solver.  Every exposure layer is an Overpass query over the
+    whole box, and OSM density varies enormously -- a 1.2 degree box over
+    Kerala returns a 76 MB exposure response and effectively stalls the run,
+    while the same box over the Himalaya returns a few MB.
+
+    For a reportable run, set an explicit bbox: a domain that clips the flood
+    shows up in the QC gate as wetted cells touching the boundary.
+    """
+    h = height_m if (height_m and height_m > 0) else 60.0
+    half = min(max(h * 0.0015, 0.12), 0.35)
+    bbox = (round(lon - half, 4), round(lat - half, 4),
+            round(lon + half, 4), round(lat + half, 4))
+    area_km2 = (2 * half * 111.0) ** 2 * math.cos(math.radians(lat))
+    note = (f"Screening domain: half-extent {half:.3f} deg (~{area_km2:,.0f} "
+            f"km2) scaled from a dam height of {h:.0f} m, clamped to "
+            f"0.12-0.35 deg to match the calibrated preset domains. "
+            f"HEURISTIC - set an explicit bbox for a reportable run, and "
+            f"check the domain-edge QC flag for a clipped flood.")
+    return bbox, note
 
 
 def wikipedia_infobox(title: str) -> dict:
