@@ -151,10 +151,19 @@ def detect_water_surface(z: np.ndarray, water_mask: np.ndarray,
             "spread_m": float(hi - lo)}
 
 
+DEFAULT_SHAPE_EXPONENT = 2.4     # typical narrow Himalayan valley
+
+
 def _solve_shape_exponent(d_ws: float, d_crest: float, area_ws: float,
-                          volume_target: float) -> float:
+                          volume_target: float) -> Tuple[float, bool]:
     """Find b in V = a*d^b that reproduces both the observed surface area at
-    the DSM water level and the published storage at crest level."""
+    the DSM water level and the published storage at crest level.
+
+    Returns (b, solved).  `solved` is False when the bisection bracket contains
+    no root and the default exponent had to be used instead.  The caller MUST
+    record that flag: a solved exponent is constrained by two measurements, a
+    defaulted one is a guess, and the provenance has to tell them apart.
+    """
     target = area_ws / max(volume_target, 1e-9)
 
     def f(b):
@@ -163,14 +172,14 @@ def _solve_shape_exponent(d_ws: float, d_crest: float, area_ws: float,
     lo, hi = 1.05, 6.0
     flo, fhi = f(lo), f(hi)
     if flo * fhi > 0:
-        return 2.4                       # typical narrow Himalayan valley
+        return DEFAULT_SHAPE_EXPONENT, False
     for _ in range(80):
         mid = 0.5 * (lo + hi)
         if f(lo) * f(mid) <= 0:
             hi = mid
         else:
             lo = mid
-    return 0.5 * (lo + hi)
+    return 0.5 * (lo + hi), True
 
 
 def hybrid_hva(dem_reservoir: Reservoir, water_surface_m: float,
@@ -213,8 +222,8 @@ def hybrid_hva(dem_reservoir: Reservoir, water_surface_m: float,
     d_ws = max(water_surface_m - z_base, 1.0)
     d_crest = max(crest_m - z_base, d_ws + 0.5)
 
-    b = _solve_shape_exponent(d_ws, d_crest, area_at_surface_m2,
-                              published_capacity_m3)
+    b, b_solved = _solve_shape_exponent(d_ws, d_crest, area_at_surface_m2,
+                                        published_capacity_m3)
     a = published_capacity_m3 / (d_crest ** b)
 
     levels = np.linspace(z_base, crest_m, n_levels)
@@ -245,13 +254,26 @@ def hybrid_hva(dem_reservoir: Reservoir, water_surface_m: float,
         "published_capacity_mcm": round(published_capacity_m3 / 1e6, 1),
         "published_dam_height_m": round(dam_height_m, 1),
         "observed_surface_area_km2": round(area_at_surface_m2 / 1e6, 3),
-        "solved_shape_exponent_b": round(b, 3),
+        "shape_exponent_b": round(b, 3),
+        "shape_exponent_solved": bool(b_solved),
+        "shape_exponent_source": (
+            "solved by bisection against the observed surface area and the "
+            "published capacity"
+            if b_solved else
+            f"DEFAULTED to {DEFAULT_SHAPE_EXPONENT} - the two constraints did "
+            "not bracket a root, so this exponent is an assumption about "
+            "valley shape, not a fitted value"),
         "coefficient_a": a,
         "dem_only_capacity_mcm": round(dem_reservoir.capacity / 1e6, 2),
+        "capacity_from_published_fraction": round(
+            1.0 - min(dem_reservoir.capacity / max(published_capacity_m3, 1.0), 1.0), 4),
         "caveat": ("Bathymetry below the DSM water surface is RECONSTRUCTED, "
-                   "not surveyed. It is constrained by the published gross "
-                   "storage and the satellite-observed surface area. Replace "
-                   "with a bathymetric survey where one exists."),
+                   "not surveyed. Gross storage is SET BY the published "
+                   "capacity: V(crest) == published capacity by construction, "
+                   "so this curve must NOT be described as DEM-derived. What "
+                   "the DEM contributes is the hypsometry above the water "
+                   "plate and the surface area that constrains the exponent. "
+                   "Replace with a bathymetric survey where one exists."),
     }
     res = Reservoir(levels=levels, areas=areas, volumes=volumes,
                     bed=z_base, crest=crest_m, mask=dem_reservoir.mask)
@@ -261,6 +283,11 @@ def hybrid_hva(dem_reservoir: Reservoir, water_surface_m: float,
 def analytic_reservoir(capacity_mcm: float, depth: float, bed: float = 0.0,
                        shape_exp: float = 2.4, n_levels: int = 60) -> Reservoir:
     """Fallback H-V-A when only gazetteer capacity and dam height are known.
+
+    NOT called by the default pipeline: every preset has a DEM, so either
+    `hva_from_dem` or `hybrid_hva` applies. Kept for a barrier with no usable
+    terrain data at all.
+
 
     Uses V(h) = V_max * (h/H)^b, the standard power-law storage model; b ~ 2.4
     is typical of a narrow Himalayan valley (b ~ 3 for a steep gorge,
@@ -281,6 +308,11 @@ def analytic_reservoir(capacity_mcm: float, depth: float, bed: float = 0.0,
 def route_step(reservoir: Reservoir, volume: float, q_in: float,
                q_out: float, dt: float) -> Tuple[float, float]:
     """One explicit continuity step:  dV/dt = Qin - Qout.
+
+    NOT called by the default pipeline: `breach.simulate_breach` performs the
+    same update inline so it can share the adaptive-dt bookkeeping. Kept as the
+    standalone, testable form of the "Reservoir drained?" decision node.
+
 
     Returns (new_volume, new_level).  Volume is clamped at zero: the
     "Reservoir drained?" decision node.

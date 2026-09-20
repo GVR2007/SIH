@@ -56,6 +56,23 @@ DEBRIS_FACTOR = {
 }
 
 # --- JRC (Huizinga et al. 2017) Asia depth-damage functions ----------------
+#
+# PROVENANCE.  These are the damage-factor ordinates of the JRC global flood
+# depth-damage functions for ASIA, transcribed from the published annex of
+#
+#   Huizinga, J., de Moel, H., Szewczyk, W. (2017) "Global flood depth-damage
+#   functions: Methodology and the database with guidelines."  JRC Technical
+#   Report EUR 28552 EN, Publications Office of the European Union.
+#   doi:10.2760/16510.  Continental curves, Asia (Annex, damage-factor tables
+#   per occupancy class).
+#
+# They are TRANSCRIBED from that report, not parsed from a machine-readable
+# release.  A reviewer wanting to re-derive them should download the JRC
+# database and replace this block; nothing else in the module depends on its
+# shape, only on `DD_DEPTHS` and `DD_CURVES` being co-indexed.
+DD_SOURCE = ("JRC EUR 28552 EN (Huizinga, de Moel & Szewczyk 2017), Asia "
+             "continental depth-damage curves, TRANSCRIBED from the published "
+             "annex tables (doi:10.2760/16510) - not machine-read")
 DD_DEPTHS = np.array([0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 5.0, 6.0])
 DD_CURVES = {
     "residential":    np.array([0.00, 0.35, 0.58, 0.73, 0.84, 0.95, 0.99, 1.00, 1.00]),
@@ -65,6 +82,55 @@ DD_CURVES = {
     "agriculture":    np.array([0.00, 0.18, 0.37, 0.53, 0.66, 0.85, 0.96, 1.00, 1.00]),
 }
 
+# OSM `building=*` value -> (JRC damage curve, unit-rate key).  Anything not
+# listed falls back to residential, which is what the overwhelming majority of
+# bare `building=yes` features in rural India actually are.  The fallback is
+# counted and reported so the share of guessed occupancies is visible.
+BUILDING_CLASS_MAP = {
+    "residential": ("residential", "residential"),
+    "house": ("residential", "residential"),
+    "detached": ("residential", "residential"),
+    "semidetached_house": ("residential", "residential"),
+    "apartments": ("residential", "residential"),
+    "hut": ("residential", "residential"),
+    "bungalow": ("residential", "residential"),
+    "dormitory": ("residential", "residential"),
+    "commercial": ("commercial", "commercial"),
+    "retail": ("commercial", "commercial"),
+    "shop": ("commercial", "commercial"),
+    "office": ("commercial", "commercial"),
+    "hotel": ("commercial", "commercial"),
+    "supermarket": ("commercial", "commercial"),
+    "kiosk": ("commercial", "commercial"),
+    "industrial": ("industrial", "commercial"),
+    "warehouse": ("industrial", "commercial"),
+    "factory": ("industrial", "commercial"),
+    "school": ("infrastructure", "commercial"),
+    "college": ("infrastructure", "commercial"),
+    "university": ("infrastructure", "commercial"),
+    "hospital": ("infrastructure", "commercial"),
+    "civic": ("infrastructure", "commercial"),
+    "public": ("infrastructure", "commercial"),
+    "government": ("infrastructure", "commercial"),
+    "train_station": ("infrastructure", "commercial"),
+    "barn": ("agriculture", "residential"),
+    "farm": ("agriculture", "residential"),
+    "farm_auxiliary": ("agriculture", "residential"),
+    "greenhouse": ("agriculture", "residential"),
+    "cowshed": ("agriculture", "residential"),
+}
+
+
+def classify_building(tag: Optional[str]) -> Tuple[str, str]:
+    """OSM `building=*` value -> (JRC damage curve, unit-rate key).
+
+    Returns the residential pair for an unmapped or missing tag; callers are
+    expected to count how often that happens and report it.
+    """
+    if not tag:
+        return "residential", "residential"
+    return BUILDING_CLASS_MAP.get(str(tag).lower(), ("residential", "residential"))
+
 
 @dataclass
 class AssetValues:
@@ -73,14 +139,30 @@ class AssetValues:
     Defaults are order-of-magnitude placeholders in Indian rupees and are
     reported alongside every monetary result so a reviewer can substitute
     audited CPWD / state PWD schedule-of-rates figures.
+
+    EVERY factor that multiplies its way into a currency figure lives here and
+    is echoed by `to_dict()`.  Nothing that scales a loss may be a literal
+    buried in the accounting code -- if it changes the rupee total, it is a
+    declared assumption.
     """
     currency: str = "INR"
     residential_per_building: float = 1_200_000.0
     commercial_per_building: float = 3_500_000.0
     road_per_km: float = 25_000_000.0
     cropland_per_hectare: float = 150_000.0
+    # Roads are not written off at their full replacement cost when inundated:
+    # pavement, formation and structures fail at very different rates and much
+    # of a flooded carriageway is recoverable.  There is no depth-damage curve
+    # for Indian road classes in the JRC set, so this is a flat judgement
+    # factor -- and it is by far the largest single lever on the reported
+    # total, which is exactly why it belongs here and not in the code.
+    road_partial_damage_factor: float = 0.35
     source: str = ("USER-SUPPLIED ASSUMPTION - not measured data. "
                    "Replace with audited schedule-of-rates for the study area.")
+
+    def per_building(self, rate_key: str) -> float:
+        return (self.commercial_per_building if rate_key == "commercial"
+                else self.residential_per_building)
 
     def to_dict(self) -> dict:
         return {
@@ -88,6 +170,7 @@ class AssetValues:
             "residential_per_building": self.residential_per_building,
             "commercial_per_building": self.commercial_per_building,
             "road_per_km": self.road_per_km,
+            "road_partial_damage_factor": self.road_partial_damage_factor,
             "cropland_per_hectare": self.cropland_per_hectare,
             "_provenance": self.source,
         }
@@ -187,6 +270,37 @@ DAMAGE_CLASS_NAMES = {0: "None", 1: "Minor", 2: "Moderate",
 # Combined product
 # ---------------------------------------------------------------------------
 
+def _percentiles(field: np.ndarray, wet: np.ndarray,
+                 qs: Tuple[float, ...] = (50.0, 90.0, 99.0, 99.9)) -> Dict[str, float]:
+    """Distribution of a field over wet cells only.
+
+    `max` on a dam-break field is dominated by a handful of cells next to the
+    source patch and on steep dry fronts, where a shock-capturing scheme is at
+    its least reliable.  The percentiles are what an operational reader should
+    actually quote.
+    """
+    if not wet.any():
+        return {f"p{q:g}": 0.0 for q in qs}
+    vals = field[wet]
+    return {f"p{q:g}": round(float(np.percentile(vals, q)), 3) for q in qs}
+
+
+def structural_vulnerability(dv: np.ndarray) -> Dict[str, int]:
+    """Depth-velocity product thresholds for building stability.
+
+    Thresholds after Clausen & Clark (1990) / FEMA; d*v in m2/s:
+        < 3     inundation damage only
+        3 - 7   partial damage to masonry
+        > 7     total destruction of unreinforced masonry
+    """
+    return {
+        "dv_lt_3_m2s": int(((dv > 0) & (dv < 3)).sum()),
+        "dv_3_to_7_m2s": int(((dv >= 3) & (dv < 7)).sum()),
+        "dv_gt_7_m2s": int((dv >= 7).sum()),
+        "reference": "Clausen & Clark (1990) masonry stability thresholds",
+    }
+
+
 @dataclass
 class HazardProduct:
     hr: np.ndarray
@@ -216,6 +330,12 @@ def build_hazard(depth: np.ndarray, velocity: np.ndarray, cell_area: float,
         "max_depth_m": round(float(depth.max()), 2),
         "max_velocity_ms": round(float(velocity.max()), 2),
         "max_dv_m2s": round(float(dv.max()), 2),
+        # A single extreme cell -- usually adjacent to the breach source patch,
+        # where the scheme is least trustworthy -- sets `max_velocity_ms` and is
+        # not representative of the flood.  Report the distribution alongside it
+        # so nobody quotes the outlier as "the" velocity.
+        "velocity_percentiles_ms": _percentiles(velocity, wet),
+        "depth_percentiles_m": _percentiles(depth, wet),
         "max_hazard_rating_clipped": round(float(hr.max()), 2),
         "max_hazard_rating_raw": round(float(hr_raw.max()), 1),
         "hazard_rating_cap": HR_REPORTING_CAP,
@@ -226,7 +346,9 @@ def build_hazard(depth: np.ndarray, velocity: np.ndarray, cell_area: float,
             "the raw maximum is given alongside."),
         "mean_depth_where_wet_m": round(float(depth[wet].mean()), 3) if wet.any() else 0.0,
         "classes": class_areas(cls, cell_area),
+        "structural_dv": structural_vulnerability(np.where(wet, dv, 0.0)),
         "method": "Defra FD2321 HR = d(v+0.5) + DF",
+        "damage_curve_source": DD_SOURCE,
     }
     if arrival_s is not None:
         arrived = arrival_s >= 0
@@ -239,18 +361,3 @@ def build_hazard(depth: np.ndarray, velocity: np.ndarray, cell_area: float,
     return HazardProduct(hr=hr, hazard_class=cls, depth=depth, velocity=velocity,
                          dv=dv, arrival_s=arrival_s, duration_s=duration_s,
                          summary=summary)
-
-
-def structural_vulnerability(dv: np.ndarray) -> Dict[str, float]:
-    """Depth-velocity product thresholds for building stability.
-
-    Thresholds after Clausen & Clark (1990) / FEMA; d*v in m2/s:
-        < 3     inundation damage only
-        3 - 7   partial damage to masonry
-        > 7     total destruction of unreinforced masonry
-    """
-    return {
-        "dv_lt_3_m2s": int(((dv > 0) & (dv < 3)).sum()),
-        "dv_3_to_7_m2s": int(((dv >= 3) & (dv < 7)).sum()),
-        "dv_gt_7_m2s": int((dv >= 7).sum()),
-    }

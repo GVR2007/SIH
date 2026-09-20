@@ -66,6 +66,28 @@ H_VEL = 1e-4
 H_THIN = 2e-2         # m, films thinner than this get the absolute speed cap
 V_CAP = 50.0          # m/s, well above any physical dam-break velocity
 
+# --- steep-terrain Froude limiter -------------------------------------------
+#
+# WHY THIS EXISTS.  The shallow-water equations assume a hydrostatic pressure
+# distribution, which requires the bed slope to be small.  A Himalayan dam-break
+# domain is not that: routing a 174 m release down a gorge with >1000 m of
+# relief, the equations happily integrate water into free fall and report
+# 120-130 m/s, because sqrt(2*g*400 m) really is ~88 m/s.  Those velocities are
+# what the equations say; they are not what the physics says, because the
+# equations stopped being valid several hundred metres upslope.  Left alone
+# they propagate into the hazard rating, the d*v structural classes and the
+# arrival times an evacuation plan would be built on.
+#
+# The limiter caps the Froude number ONLY on cells whose own bed slope already
+# violates the hydrostatic assumption.  Flat-bed benchmarks (Ritter, lake at
+# rest, closed-basin mass conservation) have zero slope everywhere, so they are
+# untouched and the verification results are unchanged -- checked, not assumed.
+#
+# It is a modelling choice, not a silent correction: every run reports how many
+# cells were limited and how often, in SWEResult.stats["froude_limiter"].
+STEEP_SLOPE_DEG = 12.0   # beyond this the hydrostatic assumption is not tenable
+FROUDE_MAX = 4.0         # supercritical, but not free-fall
+
 
 # ---------------------------------------------------------------------------
 # Small helpers
@@ -386,8 +408,16 @@ def _stage(h0, hu0, hv0, h1, hu1, hv1, rh, rhu, rhv, a0, a1, dt,
 
 
 @njit(cache=True, fastmath=True, parallel=True)
-def _finalise(h, hu, hv, n2, dt, open_edges):
-    """Semi-implicit Manning friction, thin-film cap, transmissive edges."""
+def _finalise(h, hu, hv, n2, dt, open_edges, steep, fr_max, limited):
+    """Semi-implicit Manning friction, thin-film cap, Froude limiter, edges.
+
+    `steep` is a per-cell flag: 1 where the bed slope exceeds the angle at
+    which the hydrostatic (shallow-water) assumption fails, 0 elsewhere.  On
+    those cells only, the velocity is capped at `fr_max * sqrt(g*h)`.  Cells
+    with a flat bed -- which is every cell in the analytical benchmarks -- never
+    enter that branch.  `limited` accumulates the count of capped cell-steps so
+    the run can report how much it had to intervene.
+    """
     ny, nx = h.shape
     for i in prange(ny):
         for j in range(nx):
@@ -415,6 +445,16 @@ def _finalise(h, hu, hv, n2, dt, open_edges):
                     sc = V_CAP / spd
                     qx *= sc
                     qy *= sc
+            if steep[i, j] and fr_max > 0.0:
+                u = qx / hh
+                v = qy / hh
+                spd = math.sqrt(u * u + v * v)
+                vmax = fr_max * math.sqrt(G * hh)
+                if spd > vmax:
+                    sc = vmax / spd
+                    qx *= sc
+                    qy *= sc
+                    limited[i] += 1
             hu[i, j] = qx
             hv[i, j] = qy
 
@@ -478,6 +518,39 @@ def _accumulate(h, hu, hv, hmax, vmax, arrival, duration, t, dt, h_thresh):
 # Sources
 # ---------------------------------------------------------------------------
 
+def _peak_velocity_context(v_max: np.ndarray, h_max: np.ndarray,
+                           slope_deg: np.ndarray, dx: float) -> dict:
+    """Where the reported maximum velocity actually sits, and on what terrain.
+
+    A single cell sets `max_velocity_ms`.  Without knowing its depth, its bed
+    slope and its Froude number, that number cannot be judged -- and it is the
+    number a reader will quote.  So report its context rather than the bare
+    scalar.
+    """
+    if not np.isfinite(v_max).any() or v_max.max() <= 0:
+        return {}
+    k = int(np.argmax(v_max))
+    i, j = divmod(k, v_max.shape[1])
+    h = float(h_max[i, j])
+    v = float(v_max[i, j])
+    fr = v / math.sqrt(G * h) if h > 1e-6 else float("inf")
+    wet = h_max > 0.05
+    return {
+        "row_col": [i, j],
+        "depth_there_m": round(h, 3),
+        "velocity_ms": round(v, 3),
+        "bed_slope_deg": round(float(slope_deg[i, j]), 2),
+        "froude_number": round(fr, 2) if np.isfinite(fr) else None,
+        "p99_9_velocity_ms": round(float(np.percentile(v_max[wet], 99.9)), 3)
+            if wet.any() else 0.0,
+        "median_velocity_ms": round(float(np.median(v_max[wet])), 3)
+            if wet.any() else 0.0,
+        "note": ("The maximum is a single cell. Quote the percentiles for "
+                 "anything operational; check bed_slope_deg before trusting "
+                 "the maximum at all."),
+    }
+
+
 @dataclass
 class PointSource:
     """Volumetric inflow injected over a set of cells (the breach opening)."""
@@ -485,6 +558,15 @@ class PointSource:
     cols: np.ndarray
     hydrograph: Callable[[float], float]     # Q(t), m3/s
     name: str = "breach"
+
+    #: Velocity coefficient for water entering through the breach, applied to
+    #: the free-jet value sqrt(2*g*h).  A frictionless free jet would enter at
+    #: the full torricellian speed; a breach jet impinging on a plunge pool and
+    #: spreading across the source patch arrives slower, and 0.6 is the same
+    #: order as the standard orifice discharge coefficient.  It is a MODELLING
+    #: CHOICE, exposed here so it can be varied, and it only sets the momentum
+    #: of the incoming water -- the mass is fixed by the hydrograph.
+    jet_velocity_coefficient: float = 0.6
 
     def apply(self, h, hu, hv, cell_area, dt, t, direction=None) -> float:
         q = self.hydrograph(t)
@@ -494,8 +576,14 @@ class PointSource:
         dh = q * dt / (cell_area * n)
         h[self.rows, self.cols] += dh
         if direction is not None:
+            # Momentum MIXING, not accumulation: the incoming slab dh arrives
+            # with speed `spd`, so the cell's new specific discharge is the
+            # mass-weighted blend of what was there and what arrived.  This is
+            # already bounded by max(u_old, spd), which is why the source patch
+            # is not the origin of the extreme velocities.
             hh = h[self.rows, self.cols]
-            spd = np.sqrt(2.0 * G * np.maximum(hh, 0.0)) * 0.6
+            spd = np.sqrt(2.0 * G * np.maximum(hh, 0.0)) \
+                * self.jet_velocity_coefficient
             hu[self.rows, self.cols] += dh * spd * direction[0]
             hv[self.rows, self.cols] += dh * spd * direction[1]
         return q * dt
@@ -529,7 +617,9 @@ class SWE2D:
 
     def __init__(self, z: np.ndarray, dx: float, dy: float,
                  manning: np.ndarray, open_edges: bool = True,
-                 order: int = 2):
+                 order: int = 2,
+                 froude_max: float = FROUDE_MAX,
+                 steep_slope_deg: float = STEEP_SLOPE_DEG):
         self.z = np.ascontiguousarray(z, dtype=np.float64)
         self.dx = float(dx)
         self.dy = float(dy)
@@ -537,6 +627,17 @@ class SWE2D:
         self.open_edges = bool(open_edges)
         self.order = int(order)
         ny, nx = self.z.shape
+
+        # Cells where the bed is too steep for the hydrostatic assumption.
+        # Flat-bed benchmarks produce an all-zero mask, so they run exactly as
+        # before the limiter existed.
+        self.froude_max = float(froude_max)
+        self.steep_slope_deg = float(steep_slope_deg)
+        gy, gx = np.gradient(self.z, self.dy, self.dx)
+        slope_deg = np.degrees(np.arctan(np.hypot(gx, gy)))
+        self.steep = np.ascontiguousarray(
+            (slope_deg > self.steep_slope_deg).astype(np.uint8))
+        self.slope_deg = slope_deg
 
         z2 = (ny, nx)
         self.h = np.zeros(z2)
@@ -569,6 +670,13 @@ class SWE2D:
         self.hv[:] = 0.0
 
     def add_baseflow(self, channel_mask: np.ndarray, depth: float = 1.0):
+        """Pre-wet the channel to an antecedent low-flow depth.
+
+        NOT called by the default pipeline: a dam-break run starts from a dry
+        downstream bed by design, which is the conservative initial condition
+        for arrival time. Needed for a river-blockage scenario where the reach
+        is already carrying flow.
+        """
         self.h[channel_mask] = np.maximum(self.h[channel_mask], depth)
 
     # -- one residual evaluation -----------------------------------------
@@ -630,6 +738,7 @@ class SWE2D:
         injected = 0.0
         t0 = time.time()
         vol0 = float(self.h.sum() * cell_area)
+        limited = np.zeros(ny, dtype=np.int64)     # Froude-limiter counter
 
         while t < t_end and step < max_steps:
             _rowmax_wavespeed(self.h, self.hu, self.hv, self._rowmax)
@@ -663,7 +772,8 @@ class SWE2D:
                 self.hu[:] = self._hu1
                 self.hv[:] = self._hv1
 
-            _finalise(self.h, self.hu, self.hv, self.n2, dt, self.open_edges)
+            _finalise(self.h, self.hu, self.hv, self.n2, dt, self.open_edges,
+                      self.steep, self.froude_max, limited)
 
             for src in sources:
                 injected += src.apply(self.h, self.hu, self.hv, cell_area, dt,
@@ -706,6 +816,22 @@ class SWE2D:
             "max_velocity_ms": round(float(v_max.max()), 3),
             "inundated_km2": round(float((h_max > 0.05).sum() * cell_area) / 1e6, 4),
             "engine": "numba" if HAVE_NUMBA else "numpy-fallback",
+            "froude_limiter": {
+                "enabled": self.froude_max > 0.0,
+                "froude_max": self.froude_max,
+                "steep_slope_deg": self.steep_slope_deg,
+                "steep_cells": int(self.steep.sum()),
+                "steep_cell_fraction": round(float(self.steep.mean()), 4),
+                "limited_cell_steps": int(limited.sum()),
+                "limited_per_step": round(float(limited.sum()) / max(step, 1), 2),
+                "note": ("Velocity capped at froude_max*sqrt(g*h) on cells "
+                         "whose bed slope exceeds steep_slope_deg, where the "
+                         "shallow-water hydrostatic assumption does not hold. "
+                         "Flat-bed benchmarks have no steep cells and are "
+                         "unaffected."),
+            },
+            "peak_velocity_context": _peak_velocity_context(
+                v_max, h_max, self.slope_deg, self.dx),
         }
         return SWEResult(h_max=h_max, v_max=v_max, arrival_s=arrival,
                          duration_s=duration, frame_times=frame_times,

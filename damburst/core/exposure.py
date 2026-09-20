@@ -27,8 +27,9 @@ from rasterio.warp import transform as warp_transform
 from rasterio.warp import transform_geom
 
 from .dem import DEM
-from .hazard import (DAMAGE_CLASS_NAMES, HAZARD_CLASSES, AssetValues,
-                     damage_class, damage_fraction)
+from .hazard import (DAMAGE_CLASS_NAMES, DD_SOURCE, HAZARD_CLASSES,
+                     AssetValues, classify_building, damage_class,
+                     damage_fraction, structural_vulnerability)
 
 
 # ---------------------------------------------------------------------------
@@ -226,10 +227,24 @@ def facility_impact(dem: DEM, facilities: List[dict], depth: np.ndarray,
 
 def building_impact(dem: DEM, buildings: List[dict], depth: np.ndarray,
                     hazard_cls: np.ndarray, dv: np.ndarray) -> Dict[str, object]:
-    """Buildings by hazard class and by depth-damage class."""
+    """Buildings by hazard class, occupancy and depth-damage class.
+
+    SPATIAL METHOD.  Each building is represented by the `center` OSM returns
+    for its way and the rasters are sampled at that one point.  That is POINT
+    SAMPLING, not polygon intersection: at 90-150 m cells a footprint is far
+    smaller than one cell, so the two agree for all but the largest structures,
+    and point sampling avoids rasterising tens of thousands of tiny polygons.
+    Stated because it is a real simplification, and reported in the output.
+
+    OCCUPANCY.  The JRC curve and the unit rate are now selected PER BUILDING
+    from its OSM `building=*` value instead of pricing everything as a house.
+    Most rural Indian footprints carry only `building=yes`, so the residential
+    fallback still dominates; the tagged share is returned so a reader can see
+    how much of the split was inferred rather than mapped.
+    """
     if not buildings:
         return {"total_in_domain": 0, "exposed": 0, "by_hazard_class": [],
-                "by_damage_class": [], "structural_dv": {}}
+                "by_damage_class": [], "by_occupancy": [], "structural_dv": {}}
     lons = [b["lon"] for b in buildings]
     lats = [b["lat"] for b in buildings]
     d = sample_raster(dem, depth, lons, lats)
@@ -237,7 +252,21 @@ def building_impact(dem: DEM, buildings: List[dict], depth: np.ndarray,
     q = sample_raster(dem, dv, lons, lats)
 
     wet = d > 0.05
-    frac = damage_fraction(d, "residential")
+
+    curves = np.empty(len(buildings), dtype=object)
+    rate_keys = np.empty(len(buildings), dtype=object)
+    n_tagged = 0
+    for k, b in enumerate(buildings):
+        tag = b.get("building")
+        if tag and str(tag).lower() not in ("yes", "true", "1"):
+            n_tagged += 1
+        curves[k], rate_keys[k] = classify_building(tag)
+
+    # damage fraction evaluated with the curve that belongs to each building
+    frac = np.zeros(len(buildings))
+    for curve in set(curves.tolist()):
+        sel = curves == curve
+        frac[sel] = damage_fraction(d[sel], curve)
     dcls = damage_class(frac)
 
     by_haz = [{"class": i, "name": _class_name(i),
@@ -245,19 +274,35 @@ def building_impact(dem: DEM, buildings: List[dict], depth: np.ndarray,
     by_dmg = [{"class": i, "name": DAMAGE_CLASS_NAMES[i],
                "buildings": int(((dcls == i) & wet).sum())} for i in range(1, 5)]
 
+    by_occ = []
+    for curve in sorted(set(curves.tolist())):
+        sel = (curves == curve) & wet
+        n = int(sel.sum())
+        if not n:
+            continue
+        by_occ.append({
+            "occupancy": curve,
+            "rate_key": str(rate_keys[curves == curve][0]),
+            "buildings": n,
+            "mean_damage_fraction": round(float(frac[sel].mean()), 4),
+        })
+
     return {
         "total_in_domain": len(buildings),
         "exposed": int(wet.sum()),
         "by_hazard_class": by_haz,
         "by_damage_class": by_dmg,
+        "by_occupancy": by_occ,
         "mean_damage_fraction": round(float(frac[wet].mean()), 4) if wet.any() else 0.0,
-        "structural_dv": {
-            "dv_lt_3_inundation_only": int(((q > 0) & (q < 3) & wet).sum()),
-            "dv_3_to_7_partial_collapse": int(((q >= 3) & (q < 7) & wet).sum()),
-            "dv_gt_7_total_destruction": int(((q >= 7) & wet).sum()),
-            "reference": "Clausen & Clark (1990) masonry stability thresholds",
-        },
-        "damage_curve": "JRC Huizinga et al. (2017), Asia residential",
+        "occupancy_tagged_fraction": round(n_tagged / max(len(buildings), 1), 4),
+        "occupancy_note": (
+            f"{n_tagged:,} of {len(buildings):,} mapped buildings carry a "
+            "specific building=* value; the remainder default to the "
+            "residential curve and the residential unit rate."),
+        "structural_dv": structural_vulnerability(np.where(wet, q, 0.0)),
+        "spatial_method": ("point sample of the depth raster at the OSM way "
+                           "centre, not polygon intersection"),
+        "damage_curve": DD_SOURCE,
     }
 
 
@@ -348,13 +393,36 @@ def evacuation_timeline(settlements: List[dict],
 def estimate_losses(buildings: Dict[str, object], roads: Dict[str, object],
                     landcover: Dict[str, object],
                     values: AssetValues) -> Dict[str, object]:
-    """Monetary loss.  Every figure is tagged with the unit rates used."""
+    """Monetary loss.  EVERY factor that scales a figure comes from `values`.
+
+    No literal in this function multiplies its way into a rupee total: the road
+    partial-damage factor used to be hardcoded here at 0.35 while producing
+    ~96% of the reported loss, which made the "every figure is tagged with the
+    rates that produced it" promise false.  It now lives in `AssetValues` and
+    is echoed by `unit_values_used`.
+    """
     n_dmg = buildings.get("exposed", 0)
     mean_frac = buildings.get("mean_damage_fraction", 0.0) or 0.0
-    building_loss = n_dmg * mean_frac * values.residential_per_building
+
+    # Price each occupancy class with its own rate and its own mean damage
+    # fraction where the breakdown exists; fall back to the aggregate otherwise.
+    by_occ = buildings.get("by_occupancy") or []
+    if by_occ:
+        building_loss = sum(o["buildings"] * o["mean_damage_fraction"]
+                            * values.per_building(o["rate_key"]) for o in by_occ)
+        building_detail = [
+            {"occupancy": o["occupancy"], "buildings": o["buildings"],
+             "mean_damage_fraction": o["mean_damage_fraction"],
+             "unit_value": values.per_building(o["rate_key"]),
+             "loss": round(o["buildings"] * o["mean_damage_fraction"]
+                           * values.per_building(o["rate_key"]), 0)}
+            for o in by_occ]
+    else:
+        building_loss = n_dmg * mean_frac * values.residential_per_building
+        building_detail = []
 
     road_km = roads.get("total_inundated_km", 0.0) or 0.0
-    road_loss = road_km * values.road_per_km * 0.35   # partial-damage factor
+    road_loss = road_km * values.road_per_km * values.road_partial_damage_factor
 
     crop_ha = 0.0
     for label, v in (landcover or {}).items():
@@ -363,6 +431,9 @@ def estimate_losses(buildings: Dict[str, object], roads: Dict[str, object],
     crop_loss = crop_ha * values.cropland_per_hectare
 
     total = building_loss + road_loss + crop_loss
+    shares = {k: (round(100.0 * v / total, 1) if total > 0 else 0.0)
+              for k, v in (("buildings", building_loss), ("roads", road_loss),
+                           ("cropland", crop_loss))}
     return {
         "currency": values.currency,
         "buildings": round(building_loss, 0),
@@ -370,17 +441,25 @@ def estimate_losses(buildings: Dict[str, object], roads: Dict[str, object],
         "cropland": round(crop_loss, 0),
         "total": round(total, 0),
         "total_crore": round(total / 1e7, 2),
+        "percent_of_total": shares,
+        "buildings_by_occupancy": building_detail,
         "components": {
             "buildings_exposed": n_dmg,
             "mean_damage_fraction": mean_frac,
             "road_km_inundated": road_km,
+            "road_partial_damage_factor": values.road_partial_damage_factor,
             "cropland_ha_inundated": round(crop_ha, 2),
         },
         "unit_values_used": values.to_dict(),
+        "damage_curve_source": DD_SOURCE,
         "caveat": ("Monetary figures are derived from the unit rates above, "
                    "which are assumptions, not measurements. Physical exposure "
                    "counts are from OSM/WorldPop/WorldCover and are the "
                    "defensible output."),
+        "dominant_component_note": (
+            f"{max(shares, key=shares.get)} contributes "
+            f"{max(shares.values()):.0f}% of the total; check its unit rate "
+            "first before quoting any currency figure."),
     }
 
 
