@@ -16,7 +16,7 @@ import uuid
 import zipfile
 from dataclasses import replace
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -25,7 +25,6 @@ from fastapi.responses import (FileResponse, HTMLResponse, JSONResponse,
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
-from ..core.hazard import AssetValues
 from ..pipeline import RUNS, ROOT, Scenario, run_scenario
 from ..scenarios import PRESETS, preset_scenario
 
@@ -62,6 +61,42 @@ class RunRequest(BaseModel):
     manning_scale: Optional[float] = None
     validation_mode: Optional[str] = None
     sentinel1_window: Optional[List[str]] = None
+    # --- previously unreachable from BOTH the CLI and this API -----------
+    seed_method: Optional[str] = Field(
+        None, description="auto | froehlich_2008 | von_thun_gillette | "
+                          "macdonald | costa_schuster")
+    inflow_m3s: Optional[float] = None
+    channel_burn_m: Optional[float] = None
+    tailwater: Optional[bool] = None
+    tailwater_slope: Optional[float] = None
+    froude_max: Optional[float] = None
+    steep_slope_deg: Optional[float] = None
+    baseline_window: Optional[List[str]] = Field(
+        None, description="pre-event window for the permanent-water baseline; "
+                          "required for an honest benchmark score")
+    population_product: Optional[str] = None
+    iso3: Optional[str] = None
+    satellite_basemap: Optional[bool] = None
+    # --- adaptive model selection (the technical novelty) ----------------
+    auto_model_selection: Optional[bool] = Field(
+        None, description="let the framework choose the near-field physics "
+                          "from the non-hydrostatic index (default true)")
+    bed_slope_deg_c: Optional[float] = None
+    curvature_ratio_c: Optional[float] = None
+    # --- possibility of breach -------------------------------------------
+    mean_annual_flood_m3s: Optional[float] = Field(
+        None, description="enables routed P(overtopping); omit to make no "
+                          "probability claim")
+    flood_cv: Optional[float] = None
+    spillway_capacity_factor: Optional[float] = None
+    spillway_crest_length_m: Optional[float] = None
+    spillway_sill_m: Optional[float] = None
+    # Asset unit values are an economic input, not a measurement, so they have
+    # to be overridable per study area.
+    asset_values: Optional[Dict[str, Any]] = Field(
+        None, description="any of residential_per_building, "
+                          "commercial_per_building, road_per_km, "
+                          "cropland_per_hectare, road_partial_damage_factor")
 
 
 # ---------------------------------------------------------------------------
@@ -287,14 +322,37 @@ def _build_scenario(req: RunRequest) -> Scenario:
     overrides = {}
     for f in ("barrier_type", "failure_mode", "growth_law", "loading", "res_m",
               "sim_hours", "breach_hours", "n_frames", "run_sph", "sph_dp",
-              "sph_seconds", "manning_scale", "validation_mode"):
+              "sph_seconds", "manning_scale", "validation_mode",
+              "seed_method", "inflow_m3s", "channel_burn_m", "tailwater",
+              "tailwater_slope", "froude_max", "steep_slope_deg",
+              "population_product", "iso3", "satellite_basemap",
+              "auto_model_selection", "bed_slope_deg_c",
+              "curvature_ratio_c", "mean_annual_flood_m3s",
+              "flood_cv", "spillway_capacity_factor",
+              "spillway_crest_length_m", "spillway_sill_m"):
         v = getattr(req, f)
         if v is not None:
             overrides[f] = v
+    # Setting run_sph explicitly is an override; it must disable the automatic
+    # selector, or the flag would be accepted and then ignored.
+    if req.run_sph is not None and req.auto_model_selection is None:
+        overrides["auto_model_selection"] = False
     if req.name:
         overrides["name"] = req.name
     if req.sentinel1_window:
         overrides["sentinel1_window"] = tuple(req.sentinel1_window)
+    if req.baseline_window:
+        overrides["baseline_window"] = tuple(req.baseline_window)
     if req.bbox_ll:
         overrides["bbox_ll"] = tuple(req.bbox_ll)
+    if req.asset_values:
+        allowed = {"currency", "residential_per_building",
+                   "commercial_per_building", "road_per_km",
+                   "cropland_per_hectare", "road_partial_damage_factor"}
+        bad = set(req.asset_values) - allowed
+        if bad:
+            raise ValueError(f"unknown asset_values keys: {sorted(bad)}; "
+                             f"allowed: {sorted(allowed)}")
+        overrides["asset_values"] = replace(scn.asset_values,
+                                            **req.asset_values)
     return replace(scn, **overrides)

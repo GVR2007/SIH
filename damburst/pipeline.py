@@ -25,12 +25,14 @@ from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 
+from .core import adequacy as ADQ
 from .core import breach as B
 from .core import coupling as C
 from .core import datasources as ds
 from .core import dem as D
 from .core import exposure as EX
 from .core import export as OUT
+from .core import failure_probability as FP
 from .core import hazard as HZ
 from .core import reservoir as RES
 from .core import sph as SPH
@@ -65,7 +67,28 @@ class Scenario:
     run_sph: bool = True
     sph_dp: float = 3.0
     sph_seconds: float = 30.0
+    # --- adaptive model selection ------------------------------------
+    # The framework chooses the near-field physics itself from the terrain and
+    # the release scale. Set auto_model_selection=False to force `run_sph`.
+    auto_model_selection: bool = True
+    bed_slope_deg_c: float = ADQ.BED_SLOPE_DEG_C
+    curvature_ratio_c: float = ADQ.CURVATURE_RATIO_C
+    # --- possibility of breach (see docs/MATHEMATICAL_FORMULATION.md Part B)
+    # P(overtopping) is ROUTED when flood statistics are supplied; every other
+    # mechanism falls back to published base rates and is labelled as such.
+    # Left at 0.0 the whole block is skipped and the run makes no probability
+    # claim at all, which is the correct default.
+    mean_annual_flood_m3s: float = 0.0
+    flood_cv: float = 0.6
+    spillway_capacity_factor: float = 1.0
+    spillway_crest_length_m: float = 0.0     # 0 = size the placeholder
+    spillway_sill_m: float = 0.0             # 0 = derive from the crest
+    tailwater: bool = True               # Villemonte submergence on the breach weir
+    tailwater_slope: float = 0.0         # 0 = derive from the DEM long profile
+    froude_max: float = SW.FROUDE_MAX    # 0 disables the steep-terrain limiter
+    steep_slope_deg: float = SW.STEEP_SLOPE_DEG
     sentinel1_window: Optional[Tuple[str, str]] = None
+    baseline_window: Optional[Tuple[str, str]] = None   # pre-event, benchmark mode
     validation_mode: str = "context"
     satellite_basemap: bool = True
     population_product: str = "1km"
@@ -161,11 +184,23 @@ def run_scenario(scn: Scenario, run_id: Optional[str] = None,
     manifest["qc"]["dem"] = qc_dem
 
     dam_rc, dam_line = _dam_cells(dem, dam)
-    dem_c = D.condition(dem, channel_mask=None, burn=scn.channel_burn_m,
+
+    # Channel geometry node.  `channel_mask` used to be hardcoded to None, so
+    # `burn_channel` could never run whatever `channel_burn_m` was set to.  The
+    # mask now comes from the real OSM waterway centrelines, which is exactly
+    # what burn_channel's docstring says it needs; if OSM has no waterway here
+    # and a burn was requested, fall back to D8 flow accumulation on the DEM.
+    channel_mask = None
+    if scn.channel_burn_m > 0:
+        channel_mask, ch_src = _channel_mask(dem, scn.bbox_ll)
+        manifest["data_sources"]["channel_network"] = ch_src
+    dem_c = D.condition(dem, channel_mask=channel_mask, burn=scn.channel_burn_m,
                         fill_sinks=True)
     dem_c.manning = dem.manning
     dem_c.landcover = dem.landcover
     manifest["qc"]["conditioning"] = dem_c.meta.get("conditioning")
+    manifest["qc"]["landcover"] = D.landcover_summary(dem_c.landcover) \
+        if dem_c.landcover is not None else {}
 
     # -- 3. Reservoir H-V-A ----------------------------------------------
     _log(progress, "reservoir", "Deriving H-V-A curve from the DEM", 28)
@@ -218,9 +253,20 @@ def run_scenario(scn: Scenario, run_id: Optional[str] = None,
                          h_init, crest, method=scn.seed_method)
     inflow = (RES.inflow_hydrograph("constant", base=scn.inflow_m3s)
               if scn.inflow_m3s else None)
+
+    # Tailwater rating, so the Villemonte submergence correction in
+    # `weir_discharge` can actually engage.  It never did before: no tailwater
+    # was passed, so the breach discharged freely for the whole event and the
+    # peak was an upper bound.  The rating is Manning normal depth in the
+    # receiving reach, with the reach slope and roughness read off the DEM
+    # thalweg and the WorldCover map at the dam toe.
+    tw_fn, tw_meta = _tailwater_rating(scn, dem_c, frame, geom, reservoir)
+    manifest["qc"]["tailwater"] = tw_meta
+
     br = B.simulate_breach(reservoir, geom, h_init,
                            failure_mode=scn.failure_mode,
                            growth_law=scn.growth_law, inflow=inflow,
+                           tailwater=tw_fn,
                            t_end=scn.breach_hours * 3600.0)
     results["breach"] = br.to_dict()
     manifest["qc"]["breach"] = br.checks
@@ -231,10 +277,38 @@ def run_scenario(scn: Scenario, run_id: Optional[str] = None,
                                "breach_invert_m": br.invert,
                                "storage_m3": br.volume})
 
+    # -- 4b. ADAPTIVE MODEL SELECTION -------------------------------------
+    #
+    # The framework decides for itself which physics the near field needs,
+    # instead of running everything and inviting the reader to pick. The
+    # criterion is the non-hydrostatic index along the real receiving reach,
+    # evaluated at the breach-jet velocity: where the depth-averaged equations
+    # are valid, the particle model is skipped; where they are not, it is run
+    # and the handover is placed where the flow recovers a hydrostatic profile.
+    _log(progress, "select", "Adaptive model selection", 38)
+    s_dn_sel, z_dn_sel, path_sel = C.thalweg_profile(dem_c, frame.tailwater_rc,
+                                                     length_m=1500.0)
+    plan = ADQ.select_models(
+        s_dn_sel, z_dn_sel,
+        head_m=h_init - geom.invert,
+        breach_width_m=max(geom.b_top(), dem_c.dx),
+        peak_q_m3s=br.peak_q,
+        dp_m=scn.sph_dp,
+        downstream_m=900.0,
+        force=None if scn.auto_model_selection else scn.run_sph,
+        bed_slope_deg_c=scn.bed_slope_deg_c,
+        curvature_ratio_c=scn.curvature_ratio_c,
+        breach_invert_m=geom.invert,
+        toe_bed_m=float(dem_c.z[frame.tailwater_rc]),
+        corridor=ADQ.corridor_relief(dem_c.z, path_sel, dem_c.dx, dem_c.dy))
+    results["model_selection"] = plan.to_dict()
+    manifest["qc"]["model_selection"] = plan.to_dict()
+    _log(progress, "select", plan.reason, 40)
+
     # -- 5. SPH near field -----------------------------------------------
     sph_res = None
     iface = None
-    if scn.run_sph:
+    if plan.run_near_field:
         _log(progress, "sph", "SPH near-field breach jet", 42)
         t0 = time.time()
         try:
@@ -248,11 +322,13 @@ def run_scenario(scn: Scenario, run_id: Optional[str] = None,
                 upstream_dir=up_dir, along_dir=frame.along,
                 start_rc=dn_start, cfg=cfg,
                 reservoir_base_m=reservoir.bed,
-                water_surface_m=(ws or {}).get("elevation_m"))
+                water_surface_m=(ws or {}).get("elevation_m"),
+                transfer_x_m=plan.transfer_x_m)
             results["sph"] = sph_res.stats
             results["transfer_interface"] = iface.to_dict()
             results["sph_vs_weir"] = C.compare_hydrographs(
-                br, iface, head_m=h_init - geom.invert)
+                br, iface, head_m=h_init - geom.invert,
+                sph_stats=sph_res.stats)
             manifest["qc"]["sph_balance"] = results["sph_vs_weir"]
             np.savez_compressed(out / "frames" / "sph_snapshots.npz",
                                 meta=json.dumps(sph_res.stats))
@@ -280,32 +356,51 @@ def run_scenario(scn: Scenario, run_id: Optional[str] = None,
                 "2D shallow-water (Delft3D-FM class) driven by the empirical "
                 "breach weir hydrograph")]
     if iface is not None:
-        configs.append(("coupled", _blended_hydrograph(br, iface),
-                        "2D shallow-water driven by the SPH transfer-section "
-                        "hydrograph in the near field, weir closure thereafter"))
+        sph_window_s = float(iface.t[-1]) if iface.t.size else 0.0
+        sim_s = scn.sim_hours * 3600.0
+        configs.append((
+            "sph_initialised",
+            _blended_hydrograph(br, iface),
+            # Renamed from "coupled".  SPH supplies the source hydrograph for
+            # the first `sph_window_s` seconds only -- 12-20 s against a 3-hour
+            # simulation, i.e. ~0.2% of it -- after which the weir closure
+            # takes over completely.  Calling that "coupled" oversells it: the
+            # particle model sets the INITIAL CONDITION of the far field, it
+            # does not drive it.  The name now says what the configuration is.
+            f"2D shallow-water initialised by the SPH transfer-section "
+            f"hydrograph for the first {sph_window_s:.1f} s "
+            f"({100.0 * sph_window_s / max(sim_s, 1.0):.2f}% of the "
+            f"simulation), weir closure thereafter"))
 
     for k, (key, hyd, desc) in enumerate(configs):
         _log(progress, "swe", f"Running 2D model: {key}", 50 + 20 * k)
         t0 = time.time()
         model = SW.SWE2D(dem_c.z, dem_c.dx, dem_c.dy, dem_c.manning,
-                         open_edges=True, order=2)
+                         open_edges=True, order=2,
+                         froude_max=scn.froude_max,
+                         steep_slope_deg=scn.steep_slope_deg)
         model.set_still_water(h_init, mask=_pool_mask(reservoir, dem_c))
         src = SW.PointSource(rows=breach_cells[:, 0], cols=breach_cells[:, 1],
                              hydrograph=hyd, name="breach")
-        fdir = out / "frames" / key if key == "grid_standalone" else None
+        # Frames are written for EVERY configuration, so the animation and the
+        # 3D view can show whichever model the statistics were taken from.
+        # Writing them only for grid_standalone meant the dashboard rendered a
+        # different model from the one it reported numbers for.
+        fdir = out / "frames" / key
 
         def _p(t, tend, info, key=key):
             _log(progress, "swe", f"{key}: t={t / 60:.1f}/{tend / 60:.0f} min",
                  None, **info)
 
         r = model.run(t_end=scn.sim_hours * 3600.0, sources=[src],
-                      source_direction=flow_dir, n_frames=scn.n_frames if fdir else 0,
+                      source_direction=flow_dir, n_frames=scn.n_frames,
                       frame_dir=fdir, progress=_p, cfl=0.40, dt_max=15.0)
         swe_products[key] = r
         model_runs[key] = {
             "description": desc,
-            "peak_inflow_m3s": round(float(max(hyd(tt) for tt in
-                                               np.linspace(0, scn.sim_hours * 3600, 400))), 1),
+            "peak_inflow_m3s": round(
+                _hydrograph_peak(hyd, scn.sim_hours * 3600.0,
+                                 extra_times=(iface.t if iface is not None else None)), 1),
             "inundated_km2": r.stats["inundated_km2"],
             "max_depth_m": r.stats["max_depth_m"],
             "max_velocity_ms": r.stats["max_velocity_ms"],
@@ -317,6 +412,7 @@ def run_scenario(scn: Scenario, run_id: Optional[str] = None,
         manifest["timings"][f"swe_{key}_s"] = round(time.time() - t0, 1)
 
     if sph_res is not None:
+        sph_done = bool(sph_res.stats.get("completed", True))
         model_runs["sph_nearfield"] = {
             "description": ("Weakly-compressible SPH vertical slice of the "
                             "breach jet; resolves non-hydrostatic near field"),
@@ -328,11 +424,45 @@ def run_scenario(scn: Scenario, run_id: Optional[str] = None,
             "wallclock_s": sph_res.stats.get("wallclock_s"),
             "resolution": f"{sph_res.stats.get('n_particles_final')} particles "
                           f"@ dp={sph_res.stats.get('dp_m')} m",
+            # A truncated particle run must not sit in the table looking like
+            # an ordinary result next to two complete ones.
+            "status": "ok" if sph_done else "truncated",
+            "caveat": None if sph_done else (
+                f"Terminated at {sph_res.stats.get('simulated_s')} s of "
+                f"{sph_res.stats.get('requested_s')} s requested: "
+                f"{sph_res.stats.get('stop_reason')}"),
         }
-    results["model_comparison"] = C.build_comparison_table(model_runs)
+        if not sph_done and "sph_initialised" in model_runs:
+            model_runs["sph_initialised"]["status"] = "derived_from_truncated_sph"
+            model_runs["sph_initialised"]["caveat"] = (
+                "The SPH hydrograph that initialises this configuration was "
+                "truncated; see the sph_nearfield row.")
 
-    primary = swe_products.get("coupled") or swe_products["grid_standalone"]
-    results["primary_model"] = "coupled" if "coupled" in swe_products else "grid_standalone"
+    # PRIMARY MODEL.
+    # `grid_standalone` is the primary result.  The SPH-initialised
+    # configuration differs from it only over the first few seconds and, where
+    # the particle run was truncated, inherits that truncation -- so it must
+    # not be the run that hazard, exposure and loss are computed from.  It
+    # stays in the comparison as a sensitivity, which is what it is.
+    primary_key = "grid_standalone"
+    primary = swe_products[primary_key]
+    results["primary_model"] = primary_key
+    results["primary_model_rationale"] = (
+        "grid_standalone is the primary configuration: it is driven end to end "
+        "by the empirical breach hydrograph with no dependence on the "
+        "near-field particle run. sph_initialised is reported alongside as a "
+        "sensitivity on the first seconds of the release.")
+    model_runs[primary_key]["is_primary"] = True
+
+    # Quantitative agreement between the far-field configurations, so the
+    # comparison is more than a table of scalar maxima.
+    if len(swe_products) > 1:
+        results["model_agreement"] = [
+            VAL.field_agreement(primary.h_max, r.h_max, dem_c.cell_area,
+                                label=f"{primary_key} vs {k}")
+            for k, r in swe_products.items() if k != primary_key]
+
+    results["model_comparison"] = C.build_comparison_table(model_runs)
 
     # -- 7. Hazard --------------------------------------------------------
     _log(progress, "hazard", "Hazard rating and classification", 82)
@@ -341,6 +471,19 @@ def run_scenario(scn: Scenario, run_id: Optional[str] = None,
                          arrival_s=primary.arrival_s,
                          duration_s=primary.duration_s)
     results["hazard"] = hz.summary
+
+    # -- 7b. Post-run model adequacy --------------------------------------
+    # The same criterion that chose the models, now applied to the solution
+    # that was actually produced: over how much of the inundated area were the
+    # equations we used valid? A hazard raster cannot say this about itself.
+    _log(progress, "adequacy", "Scoring model adequacy over the solution", 84)
+    adq = ADQ.adequacy_field(dem_c.z, primary.h_max, primary.v_max,
+                             dem_c.dx, dem_c.dy,
+                             bed_slope_deg_c=scn.bed_slope_deg_c,
+                             curvature_ratio_c=scn.curvature_ratio_c)
+    results["model_adequacy"] = adq.summary
+    manifest["qc"]["model_adequacy"] = adq.summary
+    _log(progress, "adequacy", adq.summary["verdict"], 85)
 
     # -- 8. Exposure and impact -------------------------------------------
     _log(progress, "impact", "Zonal intersection with exposure layers", 88)
@@ -388,6 +531,51 @@ def run_scenario(scn: Scenario, run_id: Optional[str] = None,
     OUT.export_csv(out / "tables" / "districts.csv", districts)
     OUT.export_csv(out / "tables" / "critical_facilities.csv", facilities)
 
+    # -- 8b. Possibility of breach ----------------------------------------
+    # Everything above is CONDITIONAL on failure. This is the other factor.
+    if scn.mean_annual_flood_m3s > 0:
+        _log(progress, "failure", "Routing the design-flood family", 90)
+        try:
+            if scn.spillway_crest_length_m > 0:
+                spill = FP.Spillway(
+                    crest_length_m=scn.spillway_crest_length_m,
+                    sill_elevation_m=(scn.spillway_sill_m or crest - 3.0),
+                    source="USER-SUPPLIED spillway rating")
+            else:
+                spill = FP.default_spillway(
+                    crest, reservoir,
+                    mean_annual_flood_m3s=scn.mean_annual_flood_m3s,
+                    flood_cv=scn.flood_cv,
+                    capacity_factor=scn.spillway_capacity_factor)
+            results["failure_probability"] = FP.failure_probability_report(
+                reservoir, crest, spillway=spill,
+                mean_annual_flood_m3s=scn.mean_annual_flood_m3s,
+                flood_cv=scn.flood_cv, barrier_type=scn.barrier_type,
+                # Start the flood routing from the spillway sill (the
+                # normal operating level), NOT from `h_init`.
+                #
+                # `loading="FRL"` sets h_init to the CREST, because the crest
+                # is what the dam-line elevations give. That is the right
+                # antecedent condition for a breach scenario -- a full
+                # reservoir is the worst case -- but it is a nonsense starting
+                # point for flood routing: a reservoir already at crest level
+                # has zero freeboard and overtops on any flood at all, which
+                # would report P(overtopping) ~ 1 as if it were a finding.
+                # `None` lets the routine use the sill.
+                starting_level=None)
+            manifest["data_sources"]["spillway"] = spill.to_dict()
+        except Exception as exc:                       # noqa: BLE001
+            results["failure_probability"] = {
+                "error": f"{type(exc).__name__}: {exc}"}
+    else:
+        results["failure_probability"] = {
+            "computed": False,
+            "note": ("No flood statistics supplied, so no probability of "
+                     "failure is claimed. Every hazard and exposure figure in "
+                     "this run is CONDITIONAL on failure occurring. Supply "
+                     "--mean-annual-flood to route the design-flood family."),
+        }
+
     # -- 9. Validation against Sentinel-1 ---------------------------------
     _log(progress, "validate", "Sentinel-1 observed water extent", 92)
     try:
@@ -414,6 +602,10 @@ def run_scenario(scn: Scenario, run_id: Optional[str] = None,
                       description="Duration above arrival threshold (s)")
     OUT.write_geotiff(rasters / "dem_conditioned.tif", dem_c.z, dem_c,
                       description="Conditioned DEM (m)")
+    OUT.write_geotiff(rasters / "model_adequacy_nhi.tif", adq.nhi, dem_c,
+                      description=("Non-hydrostatic index; >=1 means the "
+                                   "depth-averaged shallow-water assumptions "
+                                   "are violated at that cell"))
 
     vectors = out / "vectors"
     shp = OUT.export_flood_extent_shp(vectors / "flood_extent.shp",
@@ -442,22 +634,32 @@ def run_scenario(scn: Scenario, run_id: Optional[str] = None,
         float(np.nanpercentile(arr_min, 95)) if np.isfinite(arr_min).any() else 60.0,
         "arrival", mask_below=-1e9)
 
+    overlays["adequacy"] = OUT.raster_to_png_4326(
+        adq.nhi, dem_c, ov / "model_adequacy.png", 0.0, 3.0, "hazard",
+        mask_below=0.02)
+
     # Shaded relief, so the dashboard has a basemap even with no internet.
     overlays["basemap"] = OUT.hillshade_png_4326(dem_c, ov / "basemap.png",
                                                  rgb=sat_rgb)
 
     # Terrain + time-varying water surface for the 3D viewer.
+    #
+    # BOTH the 3D payload and the 2D animation are built from `primary` -- the
+    # same run every reported statistic comes from.  They used to be hardwired
+    # to `grid_standalone` while the numbers came from the coupled run, so the
+    # dashboard animated one model and tabulated another.
     _log(progress, "export", "Writing 3D terrain and water surface", 97)
     try:
         results["terrain3d"] = _write_terrain_3d(
-            swe_products.get("grid_standalone") or primary, dem_c, primary,
-            hz, out, dam_line=dam_line, rgb=sat_rgb)
+            primary, dem_c, primary, hz, out, dam_line=dam_line, rgb=sat_rgb)
+        results["terrain3d"]["source_model"] = primary_key
     except Exception as exc:                           # noqa: BLE001
         results["terrain3d"] = {"error": f"{type(exc).__name__}: {exc}"}
         _log(progress, "export", f"3D export failed: {exc}", 97)
 
-    frame_meta = _write_frame_overlays(swe_products.get("grid_standalone"),
-                                       dem_c, out)
+    frame_meta = _write_frame_overlays(primary, dem_c, out)
+    if isinstance(frame_meta, dict):
+        frame_meta["source_model"] = primary_key
 
     results["exports"] = {
         "rasters": sorted(p.name for p in rasters.glob("*.tif")),
@@ -501,16 +703,46 @@ def run_scenario(scn: Scenario, run_id: Optional[str] = None,
         "reservoir": manifest["qc"].get("reservoir", {}).get("pass"),
         "breach_mass_balance": manifest["qc"].get("breach", {})
             .get("mass_balance", {}).get("pass"),
+        # Scale-independent: critical flow through the breach's own section.
+        # This is the gate that actually binds on large Indian dams.
+        "breach_critical_flow": manifest["qc"].get("breach", {})
+            .get("peak_discharge_critical_flow", {}).get("pass"),
+        # May be None ("not applicable") when the reservoir is outside the
+        # range the empirical regressions were fitted to.
         "breach_peak_envelope": manifest["qc"].get("breach", {})
             .get("peak_discharge_envelopes", {}).get("pass"),
         "breach_geometry": manifest["qc"].get("breach", {})
             .get("geometry", {}).get("pass"),
-        "sph_balance": manifest["qc"].get("sph_balance", {}).get("balance_pass"),
         "exposure": manifest["qc"].get("exposure", {}).get("pass"),
     }
+    # The SPH balance gate only exists if the near field was actually modelled.
+    # Listing it as "inconclusive" when the selector deliberately decided the
+    # particle model was unnecessary would turn a correct decision into a
+    # blemish on the QC panel.
+    if plan.run_near_field:
+        gates["sph_balance"] = manifest["qc"].get(
+            "sph_balance", {}).get("balance_pass")
+    else:
+        manifest["qc"]["sph_balance"] = {
+            "not_applicable": True,
+            "reason": ("the near-field particle model was not required for "
+                       "this scenario; see qc.model_selection"),
+        }
     manifest["qc"]["gates"] = gates
     manifest["qc"]["failed_gates"] = [k for k, v in gates.items() if v is False]
+    # A gate that returned None did not pass -- it could not be evaluated.
+    # Counting None as a pass is how a 16x envelope exceedance used to end up
+    # inside a green "overall_pass". It is now reported as its own category.
+    manifest["qc"]["inconclusive_gates"] = [
+        k for k, v in gates.items() if v is None]
     manifest["qc"]["overall_pass"] = not manifest["qc"]["failed_gates"]
+    manifest["qc"]["gate_legend"] = {
+        "true": "evaluated and passed",
+        "false": "evaluated and failed - counted in failed_gates",
+        "null": ("could not be evaluated for this scenario (e.g. an empirical "
+                 "regression outside its calibration range). NOT a pass; "
+                 "listed in inconclusive_gates."),
+    }
 
     (out / "manifest.json").write_text(json.dumps(manifest, indent=2, default=str))
     (out / "results.json").write_text(json.dumps(results, indent=2, default=str))
@@ -683,6 +915,117 @@ def _breach_cells(dem: D.DEM, frame: DamFrame,
     return cand[np.sort(idx)]
 
 
+def _hydrograph_peak(hyd: Callable[[float], float], t_end: float,
+                     extra_times: Optional[np.ndarray] = None,
+                     n: int = 2000) -> float:
+    """Peak of a source hydrograph, sampled so short features cannot be missed.
+
+    This used to be `max(hyd(t) for t in linspace(0, t_end, 400))`.  Over a
+    3-hour simulation that is one sample every 27 s, while the SPH-driven
+    portion of the blended hydrograph is 12-20 s long -- so the sampler stepped
+    straight over it and the SPH-initialised configuration reported a peak
+    IDENTICAL to the standalone run, making two different models look like they
+    agreed exactly.
+
+    The fix is to sample the union of a coarse global grid, a fine grid over
+    the early transient, and the actual sample times of any supplied series.
+    """
+    ts = [np.linspace(0.0, t_end, n)]
+    # Dense coverage of the first 10 minutes, where every fast feature lives.
+    ts.append(np.linspace(0.0, min(600.0, t_end), 1200))
+    if extra_times is not None and np.size(extra_times):
+        ts.append(np.asarray(extra_times, dtype=float))
+    grid = np.unique(np.concatenate(ts))
+    grid = grid[(grid >= 0.0) & (grid <= t_end)]
+    return float(max(hyd(float(tt)) for tt in grid))
+
+
+def _channel_mask(dem: D.DEM, bbox_ll) -> Tuple[Optional[np.ndarray], str]:
+    """Channel-network raster for stream burning, from OSM then from the DEM.
+
+    Preference order matters: an OSM waterway centreline is surveyed, a D8
+    accumulation threshold is inferred.  Use the real data when it exists.
+    """
+    try:
+        ways = ds.fetch_waterways(bbox_ll)
+    except Exception as exc:                           # noqa: BLE001
+        ways = []
+        osm_err = str(exc)
+    else:
+        osm_err = None
+
+    if ways:
+        mask = np.zeros(dem.shape, dtype=bool)
+        hit = 0
+        for w in ways:
+            coords = w.get("coords_ll") or []
+            if len(coords) < 2:
+                continue
+            rows, cols, inside = EX.ll_to_rowcol(
+                dem, [c[0] for c in coords], [c[1] for c in coords])
+            rr, cc = rows[inside], cols[inside]
+            if rr.size:
+                mask[rr, cc] = True
+                hit += 1
+        if mask.any():
+            return mask, (f"OpenStreetMap waterway centrelines (ODbL), "
+                          f"{hit} ways burned")
+
+    # Fallback: the DEM's own drainage network.  O(N) over cells, so only run
+    # when a burn was explicitly requested and OSM had nothing.
+    acc = D.d8_flow_accumulation(dem.z, dem.dx)
+    thresh = float(np.percentile(acc, 99.5))
+    mask = acc >= thresh
+    return mask, (f"D8 flow accumulation on the conditioned DEM, "
+                  f"threshold {thresh:.0f} cells "
+                  f"(OSM waterways unavailable{': ' + osm_err if osm_err else ''})")
+
+
+def _tailwater_rating(scn: "Scenario", dem: D.DEM, frame: "DamFrame",
+                      geom: B.BreachGeometry, reservoir: RES.Reservoir):
+    """Build the downstream stage rating that drives Villemonte submergence.
+
+    Returns (callable or None, provenance dict).  The reach slope comes from
+    the DEM thalweg below the dam toe and the roughness from the WorldCover
+    Manning map there, so nothing here is a typed-in number.
+    """
+    if not scn.tailwater:
+        return None, {"enabled": False,
+                      "note": ("Tailwater disabled: the breach discharges "
+                               "freely and peak outflow is an upper bound.")}
+    try:
+        s_dn, z_dn, _path = C.thalweg_profile(dem, frame.tailwater_rc,
+                                              length_m=3000.0)
+        if z_dn.size < 3:
+            raise ValueError("thalweg too short")
+        slope = scn.tailwater_slope or max(
+            float((z_dn[0] - z_dn[-1]) / max(s_dn[-1] - s_dn[0], 1.0)), 1e-4)
+        r0, c0 = frame.tailwater_rc
+        n_bed = float(dem.manning[r0, c0]) if dem.manning is not None else 0.035
+        width = max(geom.b_top(), dem.dx)
+        invert = float(dem.z[r0, c0])
+    except Exception as exc:                           # noqa: BLE001
+        return None, {"enabled": False,
+                      "error": f"{type(exc).__name__}: {exc}",
+                      "note": "Tailwater rating unavailable; free discharge."}
+
+    fn = B.normal_depth_tailwater(invert, width, slope, n_bed)
+    return fn, {
+        "enabled": True,
+        "method": "Manning normal depth in a wide rectangular reach",
+        "reach_slope": round(slope, 5),
+        "reach_slope_source": ("DEM thalweg over 3 km below the dam toe"
+                               if not scn.tailwater_slope else "user-supplied"),
+        "manning_n": round(n_bed, 4),
+        "manning_n_source": "ESA WorldCover class at the dam toe",
+        "conveyance_width_m": round(width, 1),
+        "invert_m": round(invert, 2),
+        "note": ("Rating curve, not a backwater solution: the reach is assumed "
+                 "to convey the breach discharge at normal depth. Conservative "
+                 "in a steep gorge, where the true tailwater is lower."),
+    }
+
+
 def _blended_hydrograph(br: B.BreachResult, iface: C.TransferInterface):
     """SPH drives the first seconds; the weir closure carries the long tail."""
     weir = br.hydrograph()
@@ -732,29 +1075,40 @@ def _published_reservoir(dossier: dict) -> Tuple[Optional[float], Optional[float
 
 
 def _reservoir_cross_check(res_summary: dict, dossier: dict) -> dict:
-    """Compare DEM-derived storage against the published engineering record.
+    """Compare the storage the DEM ACTUALLY MEASURED against the published record.
 
-    A crucial caveat is recorded here rather than buried: Copernicus GLO-30 is
-    a DIGITAL SURFACE MODEL from 2011-2015 radar.  Where a reservoir already
-    existed at acquisition time, the DEM records the *water surface*, not the
-    drowned valley floor.  DEM hypsometry therefore measures the storage
-    between that water surface and the crest, which is a lower bound on gross
-    storage -- it cannot see the bathymetry underneath.  Matching the published
-    gross capacity is not expected, and a shortfall is the correct behaviour,
-    not an error.  Pre-impoundment topography or a bathymetric survey is needed
-    to close the gap.
+    Copernicus GLO-30 is a DIGITAL SURFACE MODEL from 2011-2015 radar.  Where a
+    reservoir already existed at acquisition time, the DEM records the *water
+    surface*, not the drowned valley floor.  DEM hypsometry therefore measures
+    only the storage between that water surface and the crest -- a lower bound
+    on gross storage.
+
+    THE CIRCULARITY THIS AVOIDS.  When the hybrid reconstruction runs, gross
+    capacity is set BY the published figure (`a = V_pub / d_crest**b`), so
+    comparing the reconstructed capacity against the published capacity is
+    comparing a number against the number it was built from: the ratio is ~1 by
+    construction and the gate cannot fail.  This check therefore uses
+    `dem_only_capacity_mcm` -- what the terrain independently contributed --
+    and reports the reconstructed figure separately, labelled as reconstructed.
     """
+    deriv = res_summary.get("derivation", {}) or {}
+    reconstructed = "hybrid" in str(deriv.get("method", ""))
+    dem_only = deriv.get("dem_only_capacity_mcm")
+
     out = {
-        "dem_capacity_mcm": res_summary["capacity_mcm"],
+        "reported_capacity_mcm": res_summary["capacity_mcm"],
+        "capacity_is_reconstructed": bool(reconstructed),
+        "dem_only_capacity_mcm": dem_only,
         "dem_max_depth_m": res_summary["max_depth_m"],
         "dem_surface_km2": res_summary["area_at_crest_km2"],
         "messages": [],
         "pass": True,
         "dem_is_surface_model": True,
         "caveat": ("Copernicus GLO-30 is a DSM: for an existing reservoir it "
-                   "records the water surface, so DEM-derived storage is a "
-                   "LOWER BOUND on gross capacity and the surface area is "
-                   "measured at crest level, not at FRL."),
+                   "records the water surface, so DEM-only storage is a LOWER "
+                   "BOUND on gross capacity. Where the hybrid reconstruction "
+                   "ran, the reported capacity is SET BY the published figure "
+                   "and must not be presented as a DEM measurement."),
     }
     wiki = (dossier.get("wikipedia") or {}).get("fields", {})
     out["published_fields"] = wiki
@@ -767,16 +1121,42 @@ def _reservoir_cross_check(res_summary: dict, dossier: dict) -> dict:
         val, unit = cap
         pub_mcm = val * 1000.0 if unit.lower() in ("km3", "km³") else val
         out["published_capacity_mcm"] = round(pub_mcm, 1)
-        out["capacity_ratio_dem_over_published"] = round(
-            res_summary["capacity_mcm"] / pub_mcm, 3) if pub_mcm else None
-        if out["capacity_ratio_dem_over_published"] and \
-                out["capacity_ratio_dem_over_published"] > 3.0:
-            out["pass"] = False
-            out["messages"].append(
-                f"DEM storage ({res_summary['capacity_mcm']:.0f} MCM) exceeds "
-                f"the published gross capacity ({pub_mcm:.0f} MCM) by more than "
-                "3x - the pool is probably leaking past the dam axis. Check the "
-                "upstream half-plane and the barrier mask.")
+
+        if reconstructed and dem_only is not None:
+            # Independent comparison: terrain-measured storage vs published.
+            out["capacity_ratio_dem_only_over_published"] = round(
+                dem_only / pub_mcm, 4) if pub_mcm else None
+            out["published_capacity_share_of_reported"] = round(
+                1.0 - min(dem_only / max(res_summary["capacity_mcm"], 1e-9), 1.0), 4)
+            out["independence_note"] = (
+                f"The reported {res_summary['capacity_mcm']:.0f} MCM is a "
+                f"RECONSTRUCTION anchored on the published {pub_mcm:.0f} MCM; "
+                f"comparing the two would be circular. The DEM independently "
+                f"measured {dem_only:.1f} MCM above the DSM water plate, i.e. "
+                f"{100.0 * dem_only / max(res_summary['capacity_mcm'], 1e-9):.1f}% "
+                "of the storage used. The rest comes from the published record.")
+            out["messages"].append(out["independence_note"])
+            # Sanity in the other direction: the sliver the DEM sees must not
+            # exceed the published gross capacity.
+            if dem_only > pub_mcm:
+                out["pass"] = False
+                out["messages"].append(
+                    f"DEM-only storage ({dem_only:.0f} MCM) exceeds the "
+                    f"published gross capacity ({pub_mcm:.0f} MCM) - the pool "
+                    "is leaking past the dam axis. Check the upstream "
+                    "half-plane and the barrier mask.")
+        else:
+            out["capacity_ratio_dem_over_published"] = round(
+                res_summary["capacity_mcm"] / pub_mcm, 3) if pub_mcm else None
+            if out["capacity_ratio_dem_over_published"] and \
+                    out["capacity_ratio_dem_over_published"] > 3.0:
+                out["pass"] = False
+                out["messages"].append(
+                    f"DEM storage ({res_summary['capacity_mcm']:.0f} MCM) "
+                    f"exceeds the published gross capacity ({pub_mcm:.0f} MCM) "
+                    "by more than 3x - the pool is probably leaking past the "
+                    "dam axis. Check the upstream half-plane and the barrier "
+                    "mask.")
 
     surf = _published_value(wiki.get("res_surface", ""))
     if surf:
@@ -815,9 +1195,36 @@ def _validate(scn: Scenario, dem: D.DEM, swe: SW.SWEResult,
         "collection": f"{ds.S1_COLLECTION} via Microsoft Planetary Computer",
         "otsu_threshold_db": round(thr, 2),
     }
+    # The baseline is passed in BOTH modes.
+    #
+    # In `context` it supplies `permanent_water_km2` for the dashboard; in
+    # `benchmark` it is what gets subtracted from the model and the observation
+    # so the score measures the flood signal rather than the river and the
+    # reservoir being permanently wet.  Passing it only in `context` -- as this
+    # used to -- meant the subtraction never ran and a benchmark score would
+    # have been inflated by every permanently wet cell in the domain.
+    #
+    # NOTE on what `water` is in each mode.  In `context` the scene is a
+    # dry-season pass, so `water` IS the permanent baseline and observed==
+    # baseline by construction.  In `benchmark` the caller must supply
+    # `sentinel1_window` bracketing the real flood, and a separate pre-event
+    # scene is fetched for the baseline.
+    baseline = water
+    if scn.validation_mode == "benchmark" and scn.baseline_window:
+        b_items = ds.find_sentinel1(scn.bbox_ll, *scn.baseline_window)
+        if b_items:
+            b_db = ds.sentinel1_backscatter(b_items[0], dem, scn.bbox_ll)
+            baseline, b_thr = ds.sar_water_mask(b_db, slope_deg=slope)
+            manifest["data_sources"]["sentinel1_baseline"] = {
+                "item_id": b_items[0]["id"],
+                "datetime": b_items[0]["properties"]["datetime"],
+                "otsu_threshold_db": round(b_thr, 2),
+                "role": "pre-event permanent-water baseline",
+            }
+
     rep = VAL.validate_extent(
         swe.wet_mask(0.05), water, dem.cell_area, mode=scn.validation_mode,
-        baseline_water=water if scn.validation_mode == "context" else None,
+        baseline_water=baseline,
         scene=manifest["data_sources"]["sentinel1"],
         valid=np.isfinite(db))
     return rep

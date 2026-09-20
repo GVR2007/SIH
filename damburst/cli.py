@@ -39,17 +39,54 @@ def cmd_run(args):
     over = {}
     for f in ("barrier_type", "failure_mode", "growth_law", "loading",
               "res_m", "sim_hours", "breach_hours", "sph_dp", "sph_seconds",
-              "validation_mode"):
+              "validation_mode", "seed_method", "inflow_m3s", "channel_burn_m",
+              "manning_scale", "n_frames", "population_product", "iso3",
+              "froude_max", "steep_slope_deg", "tailwater_slope",
+              "bed_slope_deg_c", "curvature_ratio_c",
+              "mean_annual_flood_m3s", "flood_cv",
+              "spillway_capacity_factor", "spillway_crest_length_m",
+              "spillway_sill_m"):
         v = getattr(args, f, None)
         if v is not None:
             over[f] = v
     if args.no_sph:
+        # An explicit --no-sph IS an override, so it must also switch off the
+        # automatic selector -- otherwise the framework would cheerfully
+        # decide to run SPH anyway and the flag would silently do nothing.
         over["run_sph"] = False
+        over["auto_model_selection"] = False
+    if args.no_tailwater:
+        over["tailwater"] = False
+    if args.no_auto_model:
+        over["auto_model_selection"] = False
+    if args.no_satellite:
+        over["satellite_basemap"] = False
+    if args.sentinel1_window:
+        over["sentinel1_window"] = tuple(args.sentinel1_window)
+    if args.baseline_window:
+        over["baseline_window"] = tuple(args.baseline_window)
+
+    # Asset unit values are an economic input, so they have to be overridable
+    # from the command line -- `hazard.py` calls them "explicit, overridable
+    # scenario parameters" and until now neither interface exposed them.
+    av = {}
+    for f in ("currency", "residential_per_building", "commercial_per_building",
+              "road_per_km", "cropland_per_hectare",
+              "road_partial_damage_factor"):
+        v = getattr(args, f, None)
+        if v is not None:
+            av[f] = v
+    if av:
+        over["asset_values"] = replace(scn.asset_values, **av)
+
     scn = replace(scn, **over)
 
     print(f"Scenario: {scn.name}  dam={scn.dam_name}  bbox={scn.bbox_ll}")
+    sph_mode = ("auto (the framework decides from the non-hydrostatic index)"
+                if scn.auto_model_selection
+                else ("forced on" if scn.run_sph else "forced off"))
     print(f"  {scn.failure_mode} / {scn.barrier_type}, grid {scn.res_m} m, "
-          f"{scn.sim_hours} h, SPH={'on' if scn.run_sph else 'off'}")
+          f"{scn.sim_hours} h, near-field model: {sph_mode}")
     out = run_scenario(scn)
 
     r = out["results"]
@@ -71,6 +108,31 @@ def cmd_run(args):
           f"{r['impact']['buildings']['exposed']:,} buildings, "
           f"{r['impact']['roads']['total_inundated_km']:.1f} km road/rail, "
           f"{len(r['impact']['settlements'])} settlements")
+    ms = r.get("model_selection")
+    if ms:
+        print("\nModel selection (the framework's own decision):")
+        print("  " + _wrap(ms["reason"], 68))
+    adq = r.get("model_adequacy")
+    if adq:
+        print("\nAdequacy of the solution produced:")
+        print("  " + _wrap(adq["verdict"], 68))
+    fp = r.get("failure_probability") or {}
+    if fp.get("annual_probability_of_failure"):
+        print(f"\nPossibility of breach   P(failure) ~ "
+              f"{fp['annual_probability_of_failure']:.2e}/y "
+              f"(1 in {fp['return_period_y']:,.0f} y)")
+        ot = fp["mechanisms"]["overtopping"]
+        if ot.get("computed"):
+            first = next((x["return_period_y"] for x in ot["by_return_period"]
+                          if x["overtopped"]), None)
+            print(f"  overtopping routed; first overtops at T = "
+                  f"{first if first else '>10000'} y")
+        print("  Every hazard/exposure figure above is CONDITIONAL on failure.")
+    elif fp.get("computed") is False:
+        print("\nPossibility of breach   not computed "
+              "(no flood statistics supplied)")
+        print("  Every hazard/exposure figure above is CONDITIONAL on failure.")
+
     print("\nModel comparison:")
     for m in r["model_comparison"]:
         print(f"  {m['model']:<18} peakQ={_f(m['peak_inflow_m3s'])} "
@@ -84,6 +146,11 @@ def cmd_run(args):
 
 def _f(v, d=1):
     return "-" if v is None else f"{v:,.{d}f}"
+
+
+def _wrap(text, width=68, indent="  "):
+    import textwrap
+    return ("\n" + indent).join(textwrap.wrap(str(text), width))
 
 
 def cmd_serve(args):
@@ -123,15 +190,84 @@ def main(argv=None):
                             "instantaneous"])
     r.add_argument("--growth-law", dest="growth_law",
                    choices=["sine", "linear", "erosion"])
+    r.add_argument("--seed-method", dest="seed_method",
+                   choices=["auto", "froehlich_2008", "von_thun_gillette",
+                            "macdonald", "costa_schuster"],
+                   help="empirical breach-geometry regression (default: auto)")
     r.add_argument("--loading", help="'FRL' or a depth fraction like 0.85")
+    r.add_argument("--inflow-m3s", dest="inflow_m3s", type=float,
+                   help="constant upstream inflow Q_in during the breach")
+    r.add_argument("--no-tailwater", action="store_true",
+                   help="disable the downstream rating; the breach then "
+                        "discharges freely and peak Q is an upper bound")
+    r.add_argument("--tailwater-slope", dest="tailwater_slope", type=float,
+                   help="override the DEM-derived receiving-reach slope")
     r.add_argument("--res-m", dest="res_m", type=float)
     r.add_argument("--sim-hours", dest="sim_hours", type=float)
     r.add_argument("--breach-hours", dest="breach_hours", type=float)
+    r.add_argument("--n-frames", dest="n_frames", type=int)
+    r.add_argument("--channel-burn-m", dest="channel_burn_m", type=float,
+                   help="burn the OSM waterway centreline this deep into the "
+                        "DEM to recover sub-pixel channel conveyance")
+    r.add_argument("--manning-scale", dest="manning_scale", type=float)
+    r.add_argument("--froude-max", dest="froude_max", type=float,
+                   help="Froude cap on steep cells; 0 disables the limiter")
+    r.add_argument("--steep-slope-deg", dest="steep_slope_deg", type=float,
+                   help="bed slope above which the Froude cap applies")
     r.add_argument("--sph-dp", dest="sph_dp", type=float)
     r.add_argument("--sph-seconds", dest="sph_seconds", type=float)
     r.add_argument("--validation-mode", dest="validation_mode",
                    choices=["context", "benchmark"])
+    r.add_argument("--sentinel1-window", dest="sentinel1_window", nargs=2,
+                   metavar=("START", "END"),
+                   help="event window, e.g. 2023-08-10 2023-08-20")
+    r.add_argument("--baseline-window", dest="baseline_window", nargs=2,
+                   metavar=("START", "END"),
+                   help="pre-event window for the permanent-water baseline "
+                        "(benchmark mode; without it the score is inflated)")
+    r.add_argument("--population-product", dest="population_product",
+                   choices=["1km", "100m"])
+    r.add_argument("--iso3", dest="iso3")
+    r.add_argument("--no-satellite", action="store_true",
+                   help="skip the Sentinel-2 basemap mosaic")
+    # -- adaptive model selection -----------------------------------------
+    r.add_argument("--no-auto-model", action="store_true",
+                   help="disable adaptive model selection and honour --no-sph "
+                        "literally instead of letting the framework decide")
+    r.add_argument("--bed-slope-deg-c", dest="bed_slope_deg_c", type=float,
+                   help="bed slope at which depth-averaging is judged invalid")
+    r.add_argument("--curvature-ratio-c", dest="curvature_ratio_c", type=float,
+                   help="vertical-acceleration/g ratio threshold")
+    # -- possibility of breach ---------------------------------------------
+    r.add_argument("--mean-annual-flood", dest="mean_annual_flood_m3s",
+                   type=float,
+                   help="mean annual flood at the site (m3/s). Supplying it "
+                        "enables routed P(overtopping); without it the run "
+                        "makes no probability claim.")
+    r.add_argument("--flood-cv", dest="flood_cv", type=float,
+                   help="coefficient of variation of the annual flood series")
+    r.add_argument("--spillway-capacity-factor",
+                   dest="spillway_capacity_factor", type=float,
+                   help="scale the placeholder spillway; sweep it to see how "
+                        "much P(overtopping) depends on an unknown")
+    r.add_argument("--spillway-crest-length", dest="spillway_crest_length_m",
+                   type=float, help="real spillway crest length (m), CWC register")
+    r.add_argument("--spillway-sill", dest="spillway_sill_m", type=float,
+                   help="real spillway sill elevation (m MSL)")
     r.add_argument("--no-sph", action="store_true")
+    # -- asset unit values (economic inputs, not measurements) -------------
+    r.add_argument("--currency", dest="currency")
+    r.add_argument("--value-residential", dest="residential_per_building",
+                   type=float, help="replacement value per residential building")
+    r.add_argument("--value-commercial", dest="commercial_per_building",
+                   type=float)
+    r.add_argument("--value-road-per-km", dest="road_per_km", type=float)
+    r.add_argument("--value-cropland-per-ha", dest="cropland_per_hectare",
+                   type=float)
+    r.add_argument("--road-damage-factor", dest="road_partial_damage_factor",
+                   type=float,
+                   help="fraction of road replacement cost written off when "
+                        "inundated (dominates the loss total)")
     r.set_defaults(fn=cmd_run)
 
     s = sub.add_parser("serve", help="start the dashboard")
