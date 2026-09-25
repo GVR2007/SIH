@@ -31,3 +31,4 @@ runs/*
 *.swp
 .DS_Store
 Thumbs.db
+*.part
