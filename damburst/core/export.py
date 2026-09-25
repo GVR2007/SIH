@@ -622,6 +622,34 @@ def export_geojson(path: Path, depth: np.ndarray, hazard_cls: np.ndarray,
     return path
 
 
+def export_contours_geojson(path: Path, contours: List[dict],
+                            dem_crs: str) -> Path:
+    """Elevation contour polylines (from `dem.extract_contours`, in the DEM's
+    own projected metres) as a WGS84 GeoJSON FeatureCollection.
+
+    Same reprojection convention as `export_geojson`: geometry is built in the
+    projected CRS the solver actually ran in, then transformed to EPSG:4326
+    only at export time, so nothing upstream of this function needs to know
+    or care about lon/lat.
+    """
+    out = {"type": "FeatureCollection", "features": []}
+    for c in contours:
+        coords = c["coords"]
+        if len(coords) < 2:
+            continue
+        geom = {"type": "LineString", "coordinates": [[float(x), float(y)]
+                                                       for x, y in coords]}
+        out["features"].append({
+            "type": "Feature",
+            "geometry": transform_geom(dem_crs, "EPSG:4326", geom),
+            "properties": {"elevation_m": c["elevation_m"]},
+        })
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(out))
+    return path
+
+
 def export_csv(path: Path, rows: List[dict],
                columns: Optional[Sequence[str]] = None) -> Path:
     path = Path(path)

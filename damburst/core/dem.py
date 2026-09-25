@@ -14,7 +14,7 @@ from __future__ import annotations
 import heapq
 import math
 from dataclasses import dataclass, field
-from typing import Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 import numpy as np
 import rasterio
@@ -90,14 +90,49 @@ class DEM:
 # QC gate
 # ---------------------------------------------------------------------------
 
+def slope(z: np.ndarray, dx: float, dy: float) -> np.ndarray:
+    """Terrain slope, degrees from horizontal.
+
+    Standalone and reusable: this used to be computed ad hoc, once, inline
+    inside `qc_report` with no way for another caller (the adaptive
+    model-selection criterion, a terrain-products export) to get the same
+    field without recomputing the gradient itself.
+    """
+    gy, gx = np.gradient(z, dy, dx)
+    return np.degrees(np.arctan(np.hypot(gx, gy)))
+
+
+def aspect(z: np.ndarray, dx: float, dy: float) -> np.ndarray:
+    """Compass bearing of the downslope direction, degrees 0-360 (0 = north,
+    90 = east), the standard GIS aspect convention.
+
+    Flat cells (both gradient components ~0, i.e. no defined downslope
+    direction) are returned as NaN rather than an arbitrary bearing -- a flat
+    cell genuinely has no aspect, and reporting one (typically 0/north from a
+    naive `arctan2(0, 0)` -> 0) would silently misrepresent it as a
+    north-facing slope.
+
+    `z` rows are assumed to increase southward (the raster/array convention
+    used throughout this codebase, e.g. `DEM.z`, `dem.xy`), so the north
+    component of the gradient is the NEGATIVE row-gradient.
+    """
+    gy, gx = np.gradient(z, dy, dx)          # gy: d(z)/d(row) i.e. southward
+    dz_dnorth = -gy                          # d(z)/d(north)
+    dz_deast = gx
+    flat = (np.abs(dz_dnorth) < 1e-9) & (np.abs(dz_deast) < 1e-9)
+    # downslope direction vector = -gradient = (-dz_dnorth, -dz_deast);
+    # bearing clockwise from north = atan2(east_component, north_component)
+    bearing = np.degrees(np.arctan2(-dz_deast, -dz_dnorth)) % 360.0
+    return np.where(flat, np.nan, bearing)
+
+
 def qc_report(dem: DEM) -> dict:
     """Checks that must pass before a solver is built on this grid."""
     z = dem.z
     finite = np.isfinite(z) & (z != NODATA)
     voids = int((~finite).sum())
     zf = z[finite]
-    gy, gx = np.gradient(np.where(finite, z, np.nan), dem.dy, dem.dx)
-    slope = np.degrees(np.arctan(np.hypot(gx, gy)))
+    slope_deg = slope(np.where(finite, z, np.nan), dem.dx, dem.dy)
 
     checks = {
         "source": dem.source,
@@ -111,8 +146,8 @@ def qc_report(dem: DEM) -> dict:
         "cell_size_m": [round(dem.dx, 2), round(dem.dy, 2)],
         "crs": dem.crs,
         "projected_metres": not dem.crs.upper().endswith("4326"),
-        "max_slope_deg": round(float(np.nanmax(slope)), 2),
-        "mean_slope_deg": round(float(np.nanmean(slope)), 2),
+        "max_slope_deg": round(float(np.nanmax(slope_deg)), 2),
+        "mean_slope_deg": round(float(np.nanmean(slope_deg)), 2),
     }
     msgs = []
     if checks["void_fraction"] >= 0.02:
@@ -265,23 +300,32 @@ def landcover_summary(landcover: np.ndarray) -> dict:
 # Hydro-geometry helpers
 # ---------------------------------------------------------------------------
 
-def d8_flow_accumulation(z: np.ndarray, dx: float) -> np.ndarray:
-    """D8 flow accumulation (cell counts) on a sink-filled DEM.
+def d8_flow_direction(z: np.ndarray, dx: float) -> np.ndarray:
+    """Single-flow-direction (D8) target cell for every cell.
 
-    Used to locate the real channel network for the downstream centreline and
-    for the cross-section extraction.
+    Returns a flat int64 array of length `z.size`: `target[k]` is the raveled
+    index of the cell that cell `k` drains into, steepest-descent among its 8
+    neighbours. A cell with no downslope neighbour (a pit, or an edge cell
+    whose lowest neighbour is still higher) drains to ITSELF -- `target[k]==k`
+    -- which both `d8_flow_accumulation` and `delineate_watershed` use as the
+    sink/boundary marker.
+
+    Split out of what used to be a single `d8_flow_accumulation` function so
+    the flow-direction grid -- needed for watershed delineation, which has to
+    walk the network in the other direction -- is not a private detail nobody
+    else can reuse.
     """
     ny, nx = z.shape
-    order = np.argsort(z, axis=None)[::-1]          # high -> low
-    acc = np.ones(z.size, dtype=np.float64)
     zf = z.ravel()
+    n = zf.size
+    target = np.arange(n, dtype=np.int64)     # default: drains to self (sink)
 
     di = np.array([-1, -1, -1, 0, 0, 1, 1, 1])
     dj = np.array([-1, 0, 1, -1, 1, -1, 0, 1])
     dist = np.hypot(di * dx, dj * dx)
 
-    for idx in order:
-        i, j = divmod(int(idx), nx)
+    for idx in range(n):
+        i, j = divmod(idx, nx)
         ii, jj = i + di, j + dj
         ok = (ii >= 0) & (ii < ny) & (jj >= 0) & (jj < nx)
         if not ok.any():
@@ -290,8 +334,129 @@ def d8_flow_accumulation(z: np.ndarray, dx: float) -> np.ndarray:
         drop = (zf[idx] - zf[nidx]) / dist[ok]
         k = int(np.argmax(drop))
         if drop[k] > 0:
-            acc[nidx[k]] += acc[idx]
+            target[idx] = nidx[k]
+    return target
+
+
+def d8_flow_accumulation(z: np.ndarray, dx: float,
+                         flow_dir: Optional[np.ndarray] = None) -> np.ndarray:
+    """D8 flow accumulation (cell counts) on a sink-filled DEM.
+
+    Used to locate the real channel network for the downstream centreline and
+    for the cross-section extraction. Pass a precomputed `flow_dir` (from
+    `d8_flow_direction`) to avoid recomputing it when both are needed, e.g. by
+    `delineate_watershed`.
+    """
+    order = np.argsort(z, axis=None)[::-1]          # high -> low
+    acc = np.ones(z.size, dtype=np.float64)
+    target = flow_dir if flow_dir is not None else d8_flow_direction(z, dx)
+
+    for idx in order:
+        t = target[idx]
+        if t != idx:                                 # not a sink
+            acc[t] += acc[idx]
     return acc.reshape(z.shape)
+
+
+def delineate_watershed(z: np.ndarray, dx: float, pour_point_rc: Tuple[int, int],
+                        flow_dir: Optional[np.ndarray] = None) -> np.ndarray:
+    """Boolean catchment mask draining through `pour_point_rc`.
+
+    This was previously MISSING entirely: the codebase had D8 flow
+    accumulation (a cell-count field) and a single traced thalweg path, but
+    nothing that answers "what area drains to this point" -- the "watershed
+    boundary" node the technical-approach spec asks for.
+
+    Method: build the REVERSE of the D8 flow-direction graph (which cells
+    drain INTO each cell) and breadth-first search outward from the pour
+    point. Every cell reached is, by construction, part of its catchment --
+    this is the standard D8 watershed-delineation algorithm, just without a
+    name-brand GIS library behind it.
+    """
+    ny, nx = z.shape
+    target = flow_dir if flow_dir is not None else d8_flow_direction(z, dx)
+    n = target.size
+
+    # reverse adjacency: upstream[t] = list of cells draining into t
+    upstream: dict = {}
+    for idx in range(n):
+        t = int(target[idx])
+        if t == idx:
+            continue                                 # sink, no edge to record
+        upstream.setdefault(t, []).append(idx)
+
+    pr, pc = pour_point_rc
+    start = pr * nx + pc
+    if not (0 <= pr < ny and 0 <= pc < nx):
+        raise ValueError(f"pour point {pour_point_rc} is outside the {ny}x{nx} grid")
+
+    seen = np.zeros(n, dtype=bool)
+    seen[start] = True
+    stack = [start]
+    while stack:
+        cur = stack.pop()
+        for up in upstream.get(cur, ()):
+            if not seen[up]:
+                seen[up] = True
+                stack.append(up)
+    return seen.reshape(z.shape)
+
+
+def extract_contours(z: np.ndarray, dx: float, dy: float,
+                     interval: float = 25.0,
+                     origin_xy: Tuple[float, float] = (0.0, 0.0)
+                     ) -> List[Dict[str, object]]:
+    """Elevation contour lines at a fixed interval, as polylines in the DEM's
+    own projected coordinates (metres) -- another terrain product the
+    technical-approach spec names that had no implementation at all.
+
+    Uses matplotlib's contouring engine (marching squares) purely as a
+    geometry tracer -- no figure is drawn or rendered, `Agg` never touches a
+    display, and matplotlib is only imported here, not at module load, so
+    nothing that only needs elevation/slope/aspect/flow pays its import cost.
+
+    `origin_xy` should be `(dem.transform.c, dem.transform.f)` -- the grid's
+    own origin -- so the returned line coordinates line up with `dem.xy()`.
+    Each returned dict is `{"elevation_m": level, "coords": [[x, y], ...]}`
+    for one contour segment (a single level can produce several disjoint
+    polylines, each returned separately rather than concatenated).
+    """
+    import matplotlib
+    matplotlib.use("Agg")                    # headless: no display backend
+    import matplotlib.pyplot as plt
+
+    finite = np.isfinite(z)
+    if not finite.any():
+        return []
+    zlo, zhi = float(z[finite].min()), float(z[finite].max())
+    if zhi - zlo < interval:
+        return []
+    levels = np.arange(math.ceil(zlo / interval) * interval, zhi, interval)
+    if levels.size == 0:
+        return []
+
+    ny, nx = z.shape
+    xs = origin_xy[0] + np.arange(nx) * dx
+    ys = origin_xy[1] - np.arange(ny) * dy    # rows increase southward
+
+    fig = plt.figure()
+    try:
+        ax = fig.add_subplot(111)
+        cs = ax.contour(xs, ys, np.where(finite, z, np.nan), levels=levels)
+        out: List[Dict[str, object]] = []
+        # matplotlib >=3.8 exposes contour geometry via `cs.allsegs`
+        # (list per level of arrays of (x, y) vertices); this is the stable
+        # public shape for the versions pinned in requirements.txt.
+        for level, segs in zip(levels, cs.allsegs):
+            for seg in segs:
+                if len(seg) < 2:
+                    continue
+                out.append({"elevation_m": round(float(level), 2),
+                           "coords": [[round(float(x), 2), round(float(y), 2)]
+                                      for x, y in seg]})
+        return out
+    finally:
+        plt.close(fig)
 
 
 def steepest_descent_path(z: np.ndarray, start: Tuple[int, int],
