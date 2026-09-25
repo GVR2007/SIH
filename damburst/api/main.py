@@ -80,6 +80,12 @@ class RunRequest(BaseModel):
     population_product: Optional[str] = None
     iso3: Optional[str] = None
     satellite_basemap: Optional[bool] = None
+    water_fusion: Optional[bool] = Field(
+        None, description="fuse Sentinel-1 SAR + Sentinel-2 MNDWI + WorldCover "
+                          "into one evidenced water-body mask, used for "
+                          "reservoir plate detection and channel burning "
+                          "(default true)")
+    water_fusion_window: Optional[List[str]] = None
     # --- adaptive model selection (the technical novelty) ----------------
     auto_model_selection: Optional[bool] = Field(
         None, description="let the framework choose the near-field physics "
@@ -396,7 +402,7 @@ def _build_scenario(req: RunRequest) -> Scenario:
               "sph_seconds", "manning_scale", "validation_mode",
               "seed_method", "inflow_m3s", "channel_burn_m", "tailwater",
               "tailwater_slope", "froude_max", "steep_slope_deg",
-              "population_product", "iso3", "satellite_basemap",
+              "population_product", "iso3", "satellite_basemap", "water_fusion",
               "auto_model_selection", "bed_slope_deg_c",
               "curvature_ratio_c", "mean_annual_flood_m3s",
               "flood_cv", "spillway_capacity_factor",
@@ -414,6 +420,8 @@ def _build_scenario(req: RunRequest) -> Scenario:
         overrides["sentinel1_window"] = tuple(req.sentinel1_window)
     if req.baseline_window:
         overrides["baseline_window"] = tuple(req.baseline_window)
+    if req.water_fusion_window:
+        overrides["water_fusion_window"] = tuple(req.water_fusion_window)
     if req.bbox_ll:
         overrides["bbox_ll"] = tuple(req.bbox_ll)
     if req.asset_values:

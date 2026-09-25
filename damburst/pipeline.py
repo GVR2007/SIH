@@ -40,6 +40,7 @@ from .core import reservoir as RES
 from .core import sph as SPH
 from .core import swe2d as SW
 from .core import validation as VAL
+from .core import waterbody as WB
 
 ROOT = Path(__file__).resolve().parents[1]
 RUNS = ROOT / "runs"
@@ -93,6 +94,20 @@ class Scenario:
     baseline_window: Optional[Tuple[str, str]] = None   # pre-event, benchmark mode
     validation_mode: str = "context"
     satellite_basemap: bool = True
+    # --- multi-source water-body detection (core/waterbody.py) -----------
+    # Before this, Sentinel-1 was used only to SCORE a finished run and
+    # Sentinel-2 only as a 3D/2D basemap texture -- neither carried analytical
+    # weight before a run started, and the reservoir/river extent came from
+    # DEM hypsometry plus the ESA WorldCover permanent-water class alone. This
+    # fuses live SAR (Sentinel-1 Otsu) and optical (Sentinel-2 MNDWI) water
+    # masks with WorldCover into one evidenced water-body mask, feeds it into
+    # the DSM water-plate detection that drives the reservoir reconstruction,
+    # and reports per-reach flow direction plus an OSM cross-check. On by
+    # default; each source that is unreachable degrades gracefully, and
+    # fusion runs on whatever sources it actually got (down to just
+    # WorldCover, the pre-existing behaviour, if both satellites fail).
+    water_fusion: bool = True
+    water_fusion_window: Optional[Tuple[str, str]] = None  # None = recent dry season
     # WorldPop 100 m constrained, not 1 km aggregated: a 1 km cell assigned
     # uniformly is coarser than the model grid, so a flood edge slices a whole
     # square kilometre of population proportionally. `fetch_population` falls
@@ -201,6 +216,77 @@ def run_scenario(scn: Scenario, run_id: Optional[str] = None,
             manifest["data_sources"]["satellite_imagery"] = f"unavailable: {exc}"
             _log(progress, "ingest", f"Sentinel-2 unavailable: {exc}", 19)
 
+    # -- 1b. Multi-source water-body detection (Sentinel-1 + Sentinel-2 +
+    #        WorldCover fusion) -------------------------------------------
+    # Real data feeding a real analysis step, not a validation cross-check:
+    # this mask is what `detect_water_surface` below uses to find the DSM
+    # water plate, replacing the WorldCover-only signal used previously.
+    fused_evidence = None
+    satellite_channel_mask = None
+    water_fusion_result: Dict[str, object] = {"enabled": scn.water_fusion}
+    if scn.water_fusion:
+        _log(progress, "ingest", "Fusing Sentinel-1 + Sentinel-2 water evidence", 20)
+        wc_water = (dem.landcover == 80) if dem.landcover is not None else None
+
+        sar_water = None
+        try:
+            win = scn.water_fusion_window or _recent_dry_season_window()
+            s1_items = ds.find_sentinel1(scn.bbox_ll, win[0], win[1])
+            if s1_items:
+                db = ds.sentinel1_backscatter(s1_items[0], dem, scn.bbox_ll)
+                slope_deg = VAL.terrain_slope_deg(dem.z, dem.dx, dem.dy)
+                sar_water, sar_thr = ds.sar_water_mask(db, slope_deg=slope_deg)
+                water_fusion_result["sentinel1"] = {
+                    "item_id": s1_items[0]["id"], "window": list(win),
+                    "otsu_threshold_db": round(sar_thr, 2)}
+            else:
+                water_fusion_result["sentinel1"] = f"no scene in {win}"
+        except Exception as exc:                       # noqa: BLE001
+            water_fusion_result["sentinel1"] = f"unavailable: {exc}"
+            _log(progress, "ingest", f"Sentinel-1 water mask unavailable: {exc}", 20)
+
+        optical_water = None
+        try:
+            bands, s2_prov = ds.fetch_sentinel2_water_bands(scn.bbox_ll, dem)
+            optical_water, opt_prov = WB.optical_water_mask(
+                bands["green"], swir=bands["swir16"], method="mndwi")
+            water_fusion_result["sentinel2"] = {**opt_prov, **s2_prov}
+        except Exception as exc:                       # noqa: BLE001
+            water_fusion_result["sentinel2"] = f"unavailable: {exc}"
+            _log(progress, "ingest", f"Sentinel-2 water index unavailable: {exc}", 20)
+
+        if wc_water is not None or sar_water is not None or optical_water is not None:
+            fused_evidence = WB.fuse_water_evidence(
+                dem.cell_area, worldcover_water=wc_water, sar_water=sar_water,
+                optical_water=optical_water)
+            water_fusion_result["fusion"] = fused_evidence.summary
+
+            reaches = WB.river_reaches(fused_evidence.any_source, dem.dx, dem.dy)
+            water_fusion_result["river_network"] = WB.summarise_reaches(reaches)
+
+            # Elongated (channel-like, not basin-like) satellite reaches, as a
+            # raster mask -- available to `_channel_mask` below as a third
+            # signal alongside OSM and D8, used when OSM has nothing to burn.
+            satellite_channel_mask = WB.channel_like_mask(
+                fused_evidence.any_source, dem.dx, dem.dy)
+            if not satellite_channel_mask.any():
+                satellite_channel_mask = None
+
+            try:
+                ways = ds.fetch_waterways(scn.bbox_ll)
+                osm_mask = _rasterize_waterways(dem, ways)
+                water_fusion_result["osm_cross_check"] = WB.compare_to_osm_waterways(
+                    fused_evidence.any_source, osm_mask, dem.cell_area)
+            except Exception as exc:                   # noqa: BLE001
+                water_fusion_result["osm_cross_check"] = f"unavailable: {exc}"
+
+            _log(progress, "ingest",
+                 f"Water fusion: {len(fused_evidence.per_source)} source(s), "
+                 f"{water_fusion_result['fusion']['area_km2_any_source']:.1f} km2 "
+                 "any-source water", 21)
+    manifest["data_sources"]["water_fusion"] = water_fusion_result
+    results["water_body_fusion"] = water_fusion_result
+
     # -- 2. QC + conditioning --------------------------------------------
     _log(progress, "condition", "DEM QC and conditioning", 22)
     qc_dem = D.qc_report(dem)
@@ -215,7 +301,7 @@ def run_scenario(scn: Scenario, run_id: Optional[str] = None,
     # and a burn was requested, fall back to D8 flow accumulation on the DEM.
     channel_mask = None
     if scn.channel_burn_m > 0:
-        channel_mask, ch_src = _channel_mask(dem, scn.bbox_ll)
+        channel_mask, ch_src = _channel_mask(dem, scn.bbox_ll, satellite_channel_mask)
         manifest["data_sources"]["channel_network"] = ch_src
     dem_c = D.condition(dem, channel_mask=channel_mask, burn=scn.channel_burn_m,
                         fill_sinks=True)
@@ -239,7 +325,18 @@ def run_scenario(scn: Scenario, run_id: Optional[str] = None,
 
     # If the DSM already contains a filled reservoir, its bathymetry is hidden
     # beneath the water plate.  Reconstruct it from the published record.
-    water_mask = (dem_c.landcover == 80) if dem_c.landcover is not None else None
+    #
+    # `water_mask` is the FUSED Sentinel-1 + Sentinel-2 + WorldCover evidence
+    # from step 1b when it ran, not WorldCover alone: `any_source` (at least
+    # one independent detector agrees) is used here rather than a stricter
+    # majority/all-sources bar, because this feeds a RECALL-sensitive step --
+    # missing part of the real reservoir plate would make `detect_water_surface`
+    # underestimate its area and understate the reconstructed storage below it.
+    # Falls back to the pre-fusion WorldCover-only mask if fusion did not run
+    # or every satellite source failed.
+    water_mask = (fused_evidence.any_source if fused_evidence is not None
+                 else ((dem_c.landcover == 80) if dem_c.landcover is not None
+                       else None))
     ws = (RES.detect_water_surface(dem_c.z, water_mask, frame.upstream_mask)
           if water_mask is not None else None)
     pub_cap, pub_h = _published_reservoir(dossier)
@@ -648,6 +745,56 @@ def run_scenario(scn: Scenario, run_id: Optional[str] = None,
                       description=("Non-hydrostatic index; >=1 means the "
                                    "depth-averaged shallow-water assumptions "
                                    "are violated at that cell"))
+
+    # -- 10b. Terrain products (dem.py aspect/contours/watershed) ----------
+    # The functions existed as library code without ever being called from
+    # the pipeline or exported -- a run could never actually produce an
+    # aspect map, a contour set or a catchment boundary. Wired in here so
+    # they are real deliverables, not just tested functions.
+    _log(progress, "export", "Writing terrain morphometry products", 96)
+    # `write_geotiff` already converts NaN -> its own `nodata` tag and writes
+    # a properly flagged GeoTIFF; pre-converting NaN to a sentinel (-1) here
+    # first would have written -1.0 as ordinary DATA rather than as nodata --
+    # invisible to any GIS tool's nodata handling, and indistinguishable from
+    # a real (if nonsensical) bearing. Let the NaNs through unchanged.
+    aspect_deg = D.aspect(dem_c.z, dem_c.dx, dem_c.dy)
+    OUT.write_geotiff(rasters / "aspect_deg.tif", aspect_deg, dem_c,
+                      description=("Downslope compass bearing, degrees "
+                                  "0-360 (0=N); nodata where the cell is "
+                                  "flat and has no defined aspect"))
+
+    contour_interval = max(10.0, round(float(qc_dem.get("relief_m") or 100.0) / 20.0, -1))
+    try:
+        contours = D.extract_contours(
+            dem_c.z, dem_c.dx, dem_c.dy, interval=contour_interval,
+            origin_xy=(dem_c.transform.c, dem_c.transform.f))
+        OUT.export_contours_geojson(out / "vectors" / "contours.geojson",
+                                    contours, dem_c.crs)
+        contour_meta = {"interval_m": contour_interval, "count": len(contours)}
+    except Exception as exc:                            # noqa: BLE001
+        contour_meta = {"error": f"{type(exc).__name__}: {exc}"}
+        _log(progress, "export", f"Contour extraction failed: {exc}", 96)
+
+    try:
+        watershed = D.delineate_watershed(dem_c.z, dem_c.dx, frame.tailwater_rc)
+        OUT.write_geotiff(rasters / "watershed_mask.tif", watershed.astype("float32"),
+                          dem_c, description=(
+                              "Catchment draining through the dam's tailwater "
+                              "cell (D8, reverse-BFS); 1 = inside the "
+                              "catchment"))
+        watershed_meta = {
+            "area_km2": round(float(watershed.sum()) * dem_c.cell_area / 1e6, 3),
+            "pour_point_rc": list(frame.tailwater_rc)}
+    except Exception as exc:                            # noqa: BLE001
+        watershed_meta = {"error": f"{type(exc).__name__}: {exc}"}
+        _log(progress, "export", f"Watershed delineation failed: {exc}", 96)
+
+    results["terrain_products"] = {
+        "aspect": {"raster": "rasters/aspect_deg.tif",
+                  "method": "dem.aspect: compass bearing of steepest descent"},
+        "contours": {"vector": "vectors/contours.geojson", **contour_meta},
+        "watershed": {"raster": "rasters/watershed_mask.tif", **watershed_meta},
+    }
 
     vectors = out / "vectors"
     shp = OUT.export_flood_extent_shp(vectors / "flood_extent.shp",
@@ -1068,11 +1215,48 @@ def _hydrograph_peak(hyd: Callable[[float], float], t_end: float,
     return float(max(hyd(float(tt)) for tt in grid))
 
 
-def _channel_mask(dem: D.DEM, bbox_ll) -> Tuple[Optional[np.ndarray], str]:
-    """Channel-network raster for stream burning, from OSM then from the DEM.
+def _rasterize_waterways(dem: D.DEM, ways: List[dict]) -> np.ndarray:
+    """OSM waterway line geometries -> a boolean raster mask on `dem`'s grid.
 
-    Preference order matters: an OSM waterway centreline is surveyed, a D8
-    accumulation threshold is inferred.  Use the real data when it exists.
+    Shared by `_channel_mask` and the water-fusion OSM cross-check, so the two
+    can never disagree about how an OSM way becomes a raster cell.
+    """
+    mask = np.zeros(dem.shape, dtype=bool)
+    for w in ways:
+        coords = w.get("coords_ll") or []
+        if len(coords) < 2:
+            continue
+        rows, cols, inside = EX.ll_to_rowcol(
+            dem, [c[0] for c in coords], [c[1] for c in coords])
+        rr, cc = rows[inside], cols[inside]
+        if rr.size:
+            mask[rr, cc] = True
+    return mask
+
+
+def _recent_dry_season_window(months=("01-01", "03-31")) -> Tuple[str, str]:
+    """The most recently completed Jan-Mar window before today.
+
+    A hardcoded calendar year goes stale; this recomputes it every run so a
+    demo two years from now does not silently ask for a scene that predates
+    the mission's operational archive by an increasing margin.
+    """
+    now = time.gmtime()
+    year = now.tm_year if now.tm_mon > 3 else now.tm_year - 1
+    return f"{year}-{months[0]}", f"{year}-{months[1]}"
+
+
+def _channel_mask(dem: D.DEM, bbox_ll,
+                  satellite_channel_mask: Optional[np.ndarray] = None
+                  ) -> Tuple[Optional[np.ndarray], str]:
+    """Channel-network raster for stream burning: OSM, then satellite, then DEM.
+
+    Preference order matters: an OSM waterway centreline is surveyed, a
+    Sentinel-1/2-fused channel-like reach is remotely observed evidence, a D8
+    accumulation threshold is inferred purely from elevation.  Where OSM has
+    nothing to burn, prefer the satellite evidence (when the water-fusion step
+    produced any) over pure terrain inference, and fall through to D8 only if
+    neither observation exists.
     """
     try:
         ways = ds.fetch_waterways(bbox_ll)
@@ -1083,30 +1267,28 @@ def _channel_mask(dem: D.DEM, bbox_ll) -> Tuple[Optional[np.ndarray], str]:
         osm_err = None
 
     if ways:
-        mask = np.zeros(dem.shape, dtype=bool)
-        hit = 0
-        for w in ways:
-            coords = w.get("coords_ll") or []
-            if len(coords) < 2:
-                continue
-            rows, cols, inside = EX.ll_to_rowcol(
-                dem, [c[0] for c in coords], [c[1] for c in coords])
-            rr, cc = rows[inside], cols[inside]
-            if rr.size:
-                mask[rr, cc] = True
-                hit += 1
+        mask = _rasterize_waterways(dem, ways)
+        hit = sum(1 for w in ways if len(w.get("coords_ll") or []) >= 2)
         if mask.any():
             return mask, (f"OpenStreetMap waterway centrelines (ODbL), "
                           f"{hit} ways burned")
 
+    if satellite_channel_mask is not None and satellite_channel_mask.any():
+        return satellite_channel_mask, (
+            "Sentinel-1 + Sentinel-2 fused water mask, channel-like reaches "
+            "(elongation-filtered) "
+            f"(OSM waterways unavailable{': ' + osm_err if osm_err else ''})")
+
     # Fallback: the DEM's own drainage network.  O(N) over cells, so only run
-    # when a burn was explicitly requested and OSM had nothing.
+    # when a burn was explicitly requested and neither OSM nor satellite had
+    # anything to burn.
     acc = D.d8_flow_accumulation(dem.z, dem.dx)
     thresh = float(np.percentile(acc, 99.5))
     mask = acc >= thresh
     return mask, (f"D8 flow accumulation on the conditioned DEM, "
                   f"threshold {thresh:.0f} cells "
-                  f"(OSM waterways unavailable{': ' + osm_err if osm_err else ''})")
+                  f"(OSM waterways unavailable{': ' + osm_err if osm_err else ''}; "
+                  "no satellite-observed channel reach available)")
 
 
 def _tailwater_rating(scn: "Scenario", dem: D.DEM, frame: "DamFrame",
