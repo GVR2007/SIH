@@ -55,6 +55,14 @@ GDAL_ENV = dict(
     # here is constructed explicitly, so the filter buys nothing.
     GDAL_HTTP_MAX_RETRY="4",
     GDAL_HTTP_RETRY_DELAY="2",
+    # No timeout was previously set here at all: GDAL's vsicurl layer has no
+    # bound of its own, so a single slow or stalled COG range request could
+    # hang a run indefinitely with no exception for the surrounding
+    # try/except SourceUnavailable handlers to catch. 60 s per request, 4
+    # retries at 2 s apart (above) gives a hard ceiling of a few minutes for
+    # any one asset before the caller's own error handling can take over.
+    GDAL_HTTP_TIMEOUT="60",
+    GDAL_HTTP_CONNECTTIMEOUT="15",
     VSI_CACHE="TRUE",
     VSI_CACHE_SIZE="134217728",
     GDAL_NUM_THREADS="ALL_CPUS",
@@ -332,6 +340,90 @@ def fetch_landcover(bbox_ll: Sequence[float], dem: DEM) -> Tuple[np.ndarray, str
     return lc, f"ESA WorldCover v200 via MS Planetary Computer ({', '.join(used[:3])})"
 
 
+def _mosaic_sentinel2_bands(bbox_ll: Sequence[float], dem: DEM, bands: Tuple[str, ...],
+                            start: str, end: str, max_cloud: int, max_px: int,
+                            budget_s: float) -> Tuple[np.ndarray, float, list, int, float]:
+    """Shared granule-mosaic loop behind `fetch_sentinel2_rgb` and
+    `fetch_sentinel2_water_bands`.  Returns (raw reflectance stack shaped
+    (len(bands), ny, nx) with NaN gaps, coverage fraction, scenes used,
+    decimation factor, elapsed seconds).  Callers own caching and any
+    band-specific post-processing (visual stretch vs. index arithmetic),
+    because a stretched RGB texture and raw reflectance for NDWI/MNDWI must
+    never be the same cached array.
+    """
+    # A cloud-sorted page of 40 can easily be 40 revisits of the SAME granule,
+    # leaving the rest of the bbox uncovered, so ask for a deep page.
+    items = pc_search("sentinel-2-l2a", bbox_ll,
+                      f"{start}T00:00:00Z/{end}T23:59:59Z", limit=200,
+                      query={"eo:cloud_cover": {"lt": max_cloud}})
+    if not items:
+        items = pc_search("sentinel-2-l2a", bbox_ll,
+                          f"{start}T00:00:00Z/{end}T23:59:59Z", limit=200)
+    if not items:
+        raise SourceUnavailable(
+            f"No Sentinel-2 L2A scene over {bbox_ll} in {start}..{end}")
+
+    # A Sentinel-2 granule is ~110 km square and a study bbox routinely straddles
+    # several, so one scene covers only a fraction of the grid. Mosaic the
+    # least-cloudy scenes, each filling only the gaps its predecessors left.
+    items.sort(key=lambda it: it["properties"].get("eo:cloud_cover", 100.0))
+
+    # Mosaic onto a COARSE grid, then upsample. Reading 10 m bands at full
+    # model resolution over a basin-sized bbox is minutes of windowed COG
+    # traffic per granule -- far too slow for a demo path, and for a water
+    # index the index itself is computed at this coarse resolution too, so
+    # that is documented in the returned provenance rather than silently
+    # implied to be full-resolution.
+    dec = max(1, int(math.ceil(max(dem.ny, dem.nx) / max_px)))
+    gh, gw = max(dem.ny // dec, 1), max(dem.nx // dec, 1)
+    grid = Grid(crs=dem.crs,
+               transform=from_origin(dem.transform.c, dem.transform.f,
+                                     dem.dx * dec, dem.dy * dec),
+               width=gw, height=gh, res=dem.dx * dec)
+
+    t_start = time.time()
+    stack = np.full((len(bands), gh, gw), np.nan, dtype="float32")
+    used, tiles = [], set()
+    for item in items:
+        if np.isfinite(stack[0]).mean() > 0.995:
+            break
+        if time.time() - t_start > budget_s:          # never hang the demo
+            break
+        tile = item["properties"].get("s2:mgrs_tile") or item["id"][38:44]
+        if tile in tiles:
+            continue                                 # best scene per tile only
+        try:
+            part = np.stack([
+                _warp_into(pc_sign(item["assets"][b]["href"], "sentinel-2-l2a"),
+                           grid, resampling=Resampling.bilinear, bbox_ll=bbox_ll)
+                for b in bands])
+        except Exception:                            # noqa: BLE001 - skip bad granule
+            continue
+        gap = ~np.isfinite(stack[0]) & np.isfinite(part[0])
+        if not gap.any():
+            continue
+        for k in range(len(bands)):
+            stack[k][gap] = part[k][gap]
+        tiles.add(tile)
+        used.append({"id": item["id"], "tile": tile,
+                     "datetime": item["properties"].get("datetime"),
+                     "cloud_cover_pct": round(
+                         float(item["properties"].get("eo:cloud_cover", -1)), 2)})
+        if len(used) >= 12:
+            break
+
+    # back up to the model grid (nearest: no sub-pixel information exists
+    # between coarse cells, so nearest is honest -- bilinear would imply
+    # precision the coarse read does not have)
+    if dec > 1:
+        yi = np.minimum((np.arange(dem.ny) // dec), gh - 1)
+        xi = np.minimum((np.arange(dem.nx) // dec), gw - 1)
+        stack = stack[:, yi][:, :, xi]
+
+    coverage = float(np.isfinite(stack[0]).mean())
+    return stack, coverage, used, dec, round(time.time() - t_start, 1)
+
+
 def fetch_sentinel2_rgb(bbox_ll: Sequence[float], dem: DEM,
                         start: str = "2023-10-01", end: str = "2024-05-31",
                         max_cloud: int = 15, max_px: int = 700,
@@ -345,6 +437,11 @@ def fetch_sentinel2_rgb(bbox_ll: Sequence[float], dem: DEM,
     a Himalayan study area the difference between a 3% and a 40% cloud scene is
     the difference between usable imagery and a white sheet. Winter/spring is
     the default window because the monsoon makes summer scenes unusable.
+
+    This is a BASEMAP TEXTURE, not an analysis layer -- for water detection
+    use `fetch_sentinel2_water_bands` / `ndwi` / `mndwi` in `core/waterbody.py`,
+    which read the actual reflectance bands rather than a visually stretched
+    RGB composite.
     """
     # Mosaicking 10 m granules over a basin is the slowest step in the whole
     # pipeline (minutes), and it is pure input data -- cache it so the second
@@ -364,74 +461,8 @@ def fetch_sentinel2_rgb(bbox_ll: Sequence[float], dem: DEM,
         # minutes of granule mosaicking while an HTTP client waits.
         raise SourceUnavailable("Sentinel-2 mosaic not cached for this area")
 
-    # A cloud-sorted page of 40 can easily be 40 revisits of the SAME granule,
-    # leaving the rest of the bbox uncovered, so ask for a deep page.
-    items = pc_search("sentinel-2-l2a", bbox_ll,
-                      f"{start}T00:00:00Z/{end}T23:59:59Z", limit=200,
-                      query={"eo:cloud_cover": {"lt": max_cloud}})
-    if not items:
-        items = pc_search("sentinel-2-l2a", bbox_ll,
-                          f"{start}T00:00:00Z/{end}T23:59:59Z", limit=200)
-    if not items:
-        raise SourceUnavailable(
-            f"No Sentinel-2 L2A scene over {bbox_ll} in {start}..{end}")
-
-    # A Sentinel-2 granule is ~110 km square and a study bbox routinely straddles
-    # several, so one scene covers only a fraction of the grid. Mosaic the
-    # least-cloudy scenes, each filling only the gaps its predecessors left.
-    items.sort(key=lambda it: it["properties"].get("eo:cloud_cover", 100.0))
-
-    # Mosaic onto a COARSE grid, then upsample. This is a basemap texture, not
-    # an analysis layer: reading 10 m bands at full model resolution over a
-    # basin-sized bbox is minutes of windowed COG traffic per granule, which is
-    # far too slow to sit in a demo path. A few hundred pixels is plenty once
-    # it is draped on terrain, and the DEM still carries the geometry.
-    dec = max(1, int(math.ceil(max(dem.ny, dem.nx) / max_px)))
-    gh, gw = max(dem.ny // dec, 1), max(dem.nx // dec, 1)
-    coarse = Grid(crs=dem.crs,
-                  transform=from_origin(dem.transform.c, dem.transform.f,
-                                        dem.dx * dec, dem.dy * dec),
-                  width=gw, height=gh, res=dem.dx * dec)
-    grid = coarse
-
-    t_start = time.time()
-    rgb = np.full((3, gh, gw), np.nan, dtype="float32")
-    used, tiles = [], set()
-    for item in items:
-        if np.isfinite(rgb[0]).mean() > 0.995:
-            break
-        if time.time() - t_start > budget_s:          # never hang the demo
-            break
-        tile = item["properties"].get("s2:mgrs_tile") or item["id"][38:44]
-        if tile in tiles:
-            continue                                 # best scene per tile only
-        try:
-            part = np.stack([
-                _warp_into(pc_sign(item["assets"][b]["href"], "sentinel-2-l2a"),
-                           grid, resampling=Resampling.bilinear, bbox_ll=bbox_ll)
-                for b in ("B04", "B03", "B02")])
-        except Exception:                            # noqa: BLE001 - skip bad granule
-            continue
-        gap = ~np.isfinite(rgb[0]) & np.isfinite(part[0])
-        if not gap.any():
-            continue
-        for k in range(3):
-            rgb[k][gap] = part[k][gap]
-        tiles.add(tile)
-        used.append({"id": item["id"], "tile": tile,
-                     "datetime": item["properties"].get("datetime"),
-                     "cloud_cover_pct": round(
-                         float(item["properties"].get("eo:cloud_cover", -1)), 2)})
-        if len(used) >= 12:
-            break
-
-    # back up to the model grid (nearest: it is a texture, not a measurement)
-    if dec > 1:
-        yi = np.minimum((np.arange(dem.ny) // dec), gh - 1)
-        xi = np.minimum((np.arange(dem.nx) // dec), gw - 1)
-        rgb = rgb[:, yi][:, :, xi]
-
-    coverage = float(np.isfinite(rgb[0]).mean())
+    rgb, coverage, used, dec, secs = _mosaic_sentinel2_bands(
+        bbox_ll, dem, ("B04", "B03", "B02"), start, end, max_cloud, max_px, budget_s)
     if coverage < 0.05:
         raise SourceUnavailable(
             f"Sentinel-2 mosaic covered only {coverage:.1%} of the domain")
@@ -456,7 +487,7 @@ def fetch_sentinel2_rgb(bbox_ll: Sequence[float], dem: DEM,
         "granules_used": len(used),
         "grid_coverage_pct": round(100.0 * coverage, 1),
         "read_decimation": dec,
-        "seconds": round(time.time() - t_start, 1),
+        "seconds": secs,
         "bands": "B04/B03/B02 true colour, 2-96% per-band stretch, gamma 0.85",
         "licence": "Copernicus Sentinel data, free and open",
     }
@@ -466,6 +497,73 @@ def fetch_sentinel2_rgb(bbox_ll: Sequence[float], dem: DEM,
     except Exception:                                # noqa: BLE001 - cache is optional
         pass
     return out, prov
+
+
+def fetch_sentinel2_water_bands(bbox_ll: Sequence[float], dem: DEM,
+                                start: str = "2023-10-01", end: str = "2024-05-31",
+                                max_cloud: int = 15, max_px: int = 700,
+                                budget_s: float = 150.0,
+                                cache_only: bool = False) -> Tuple[dict, dict]:
+    """Green, NIR and SWIR16 reflectance for optical water-index computation.
+
+    Returns ({"green": arr, "nir": arr, "swir16": arr}, provenance), each array
+    float32 surface reflectance in [0, ~1] with NaN where no granule covered
+    that cell, shape (ny, nx) on the MODEL grid (nearest-upsampled from the
+    coarse mosaic read -- see `read_decimation` in the provenance).
+
+    Deliberately NOT the same fetch as `fetch_sentinel2_rgb`: NDWI/MNDWI need
+    raw reflectance ratios, and reusing the visually stretched/gamma-corrected
+    RGB composite for an index computation would silently corrupt it.
+    """
+    ckey = (f"s2water|{tuple(np.round(bbox_ll,5))}|{dem.crs}|{dem.nx}x{dem.ny}|"
+           f"{dem.dx}|{start}|{end}|{max_cloud}|{max_px}")
+    cpath = _cache_path("s2water", ckey, ".npz")
+    if cpath.exists():
+        try:
+            z = np.load(cpath, allow_pickle=False)
+            prov = json.loads(str(z["prov"]))
+            prov["cached"] = True
+            return ({"green": z["green"], "nir": z["nir"], "swir16": z["swir16"]},
+                    prov)
+        except Exception:                            # noqa: BLE001 - refetch
+            pass
+    if cache_only:
+        raise SourceUnavailable("Sentinel-2 water bands not cached for this area")
+
+    stack, coverage, used, dec, secs = _mosaic_sentinel2_bands(
+        bbox_ll, dem, ("B03", "B08", "B11"), start, end, max_cloud, max_px, budget_s)
+    if coverage < 0.05:
+        raise SourceUnavailable(
+            f"Sentinel-2 mosaic covered only {coverage:.1%} of the domain "
+            "for water-index computation")
+
+    # L2A DN -> reflectance (10000 = 1.0). Bands are NOT stretched or
+    # gamma-corrected: NDWI/MNDWI need the physical reflectance ratio.
+    refl = (stack.astype("float32") / 10000.0)
+    green, nir, swir16 = refl[0], refl[1], refl[2]
+
+    prov = {
+        "collection": "sentinel-2-l2a via Microsoft Planetary Computer",
+        "scenes": used,
+        "granules_used": len(used),
+        "grid_coverage_pct": round(100.0 * coverage, 1),
+        "read_decimation": dec,
+        "seconds": secs,
+        "bands": "B03 (green, 10 m), B08 (NIR, 10 m), B11 (SWIR16, 20 m) surface "
+                "reflectance, no stretch",
+        "resolution_note": (
+            f"Mosaicked at {dem.dx * dec:.0f} m (decimation {dec}x from the "
+            f"{dem.dx:.0f} m model grid) then nearest-upsampled back; this is "
+            "the read resolution of the water INDEX, not of the DEM or the "
+            "hazard model, and it is coarser than B03/B08's native 10 m."),
+        "licence": "Copernicus Sentinel data, free and open",
+    }
+    try:
+        np.savez_compressed(cpath, green=green, nir=nir, swir16=swir16,
+                            prov=json.dumps(prov))
+    except Exception:                                # noqa: BLE001 - cache is optional
+        pass
+    return {"green": green, "nir": nir, "swir16": swir16}, prov
 
 
 def attach_roughness(dem: DEM, bbox_ll: Sequence[float]) -> DEM:
