@@ -61,6 +61,10 @@ def cmd_run(args):
         over["auto_model_selection"] = False
     if args.no_satellite:
         over["satellite_basemap"] = False
+    if args.no_water_fusion:
+        over["water_fusion"] = False
+    if args.water_fusion_window:
+        over["water_fusion_window"] = tuple(args.water_fusion_window)
     if args.sentinel1_window:
         over["sentinel1_window"] = tuple(args.sentinel1_window)
     if args.baseline_window:
@@ -229,6 +233,14 @@ def main(argv=None):
     r.add_argument("--iso3", dest="iso3")
     r.add_argument("--no-satellite", action="store_true",
                    help="skip the Sentinel-2 basemap mosaic")
+    r.add_argument("--no-water-fusion", action="store_true",
+                   help="disable Sentinel-1/Sentinel-2/WorldCover water-body "
+                        "fusion; reservoir plate detection falls back to "
+                        "WorldCover alone")
+    r.add_argument("--water-fusion-window", dest="water_fusion_window", nargs=2,
+                   metavar=("START", "END"),
+                   help="window to search for the Sentinel-1 water-fusion "
+                        "scene (default: the most recent Jan-Mar dry season)")
     # -- adaptive model selection -----------------------------------------
     r.add_argument("--no-auto-model", action="store_true",
                    help="disable adaptive model selection and honour --no-sph "
